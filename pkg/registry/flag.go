@@ -147,6 +147,26 @@ func buildCoreFlagBool() map[string]bool {
 	return m
 }
 
+// coreFlagNames is the bare-name set of coreFlagTable, for classifying a
+// command's local flags when grouping --help output (see
+// rootcmd.splitLocalFlags).
+var coreFlagNames = buildCoreFlagNames()
+
+func buildCoreFlagNames() map[string]bool {
+	m := make(map[string]bool, len(coreFlagTable))
+	for _, f := range coreFlagTable {
+		m[f.Name] = true
+	}
+	return m
+}
+
+// IsCoreFlag reports whether name (bare, no leading dashes) is one of the
+// built-in flags wired in globally or per verb/endpoint, as opposed to a
+// flag declared by an individual command's spec (spec.CommandSpec.Flags).
+func IsCoreFlag(name string) bool {
+	return coreFlagNames[name]
+}
+
 // IndexVerbNoun scans raw CLI args (e.g. os.Args[1:]) and returns the index
 // of the verb token and, if present, the noun token, skipping over any core
 // flags (see coreFlagTable) that appear before either. verbIdx is -1 if args
