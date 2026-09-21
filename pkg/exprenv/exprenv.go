@@ -61,6 +61,7 @@ func BaseFuncs(ptyEnabled bool) map[string]any {
 		"truncate":              exprfuncs.Truncate,
 		"substr":                exprfuncs.Substr,
 		"formatOrder":           exprfuncs.FormatOrder,
+		"env":                   exprfuncs.Env,
 	}
 }
 
