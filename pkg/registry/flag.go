@@ -28,7 +28,8 @@ type flagSpec struct {
 }
 
 var (
-	specFormat      = flagSpec{name: "format", usage: "Output format: text, json, yaml"}
+	specFormat      = flagSpec{name: "format", usage: "Output format: text, json"}
+	specFormatYaml  = flagSpec{name: "format", usage: "Output format: text, json, yaml"}
 	specFormatList  = flagSpec{name: "format", usage: "Output format: table, json, jsonl, csv, tsv, markdown"}
 	specJson        = flagSpec{name: "json", kind: flagKindBool, usage: "Output as JSON (shorthand for --format json)"}
 	specYaml        = flagSpec{name: "yaml", kind: flagKindBool, usage: "Output as YAML (shorthand for --format yaml)"}
