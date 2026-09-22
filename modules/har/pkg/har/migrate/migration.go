@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,12 +79,15 @@ func (m *MigrationService) Run(ctx context.Context) error {
 	}
 
 	eng := engine.NewEngine(m.config.Concurrency, jobs)
-	err := eng.Execute(ctx)
-	if err != nil {
-		logger.Error().Err(err).Msgf("Engine execution saw following errors: %v", err)
+	engineErr := eng.Execute(ctx)
+	if engineErr != nil {
+		logger.Error().Err(engineErr).Msgf("Engine execution saw following errors: %v", engineErr)
 	}
 	logger.Info().Msg("Migration process completed")
 
+	// Handle dry-run output. Dry-run behavior is intentionally unchanged by the
+	// exit-code contract below: a dry-run never mutates anything, so engine
+	// errors there do not fail the process.
 	if m.config.DryRun {
 		return m.writeDryRunOutput(logger)
 	}
@@ -94,7 +98,20 @@ func (m *MigrationService) Run(ctx context.Context) error {
 		logger.Info().RawJSON("file_stats", jsonData).Int("total_files", len(transferStats.FileStats)).Msg("Migration file statistics")
 	}
 
-	return nil
+	// Exit-code contract: a migration with ANY failure fails the process — no
+	// opt-out. Failures are (a) engine-level errors (enumeration aborts, job
+	// panics) or (b) any per-coordinate StatusFail stat.
+	failed := 0
+	for _, fs := range transferStats.FileStats {
+		if fs.Status == types.StatusFail {
+			failed++
+		}
+	}
+	if failed > 0 {
+		engineErr = errors.Join(engineErr, fmt.Errorf("%d of %d artifact(s) failed to migrate", failed, len(transferStats.FileStats)))
+	}
+
+	return engineErr
 }
 
 func printFileStats(stats []types.FileStat) {

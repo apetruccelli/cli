@@ -314,6 +314,21 @@ func (r *Package) Migrate(ctx context.Context) error {
 			return fmt.Errorf("get versions failed: %w", err)
 		}
 
+		// Apply the opt-in version selector (packageFilters[].versions). When the
+		// current package is named in packageFilters with a non-empty versions list,
+		// only the named versions are migrated.
+		if sel, hasFilters, matched := util.SelectorForPackage(r.mapping, r.pkg.Name); hasFilters && matched && len(sel.Versions) > 0 {
+			originalCount := len(versions)
+			filtered := versions[:0:0]
+			for _, v := range versions {
+				if util.VersionSelectedBySelector(sel, v.Name) {
+					filtered = append(filtered, v)
+				}
+			}
+			versions = filtered
+			logger.Info().Msgf("Version selector filter for package %s: %d -> %d versions", r.pkg.Name, originalCount, len(versions))
+		}
+
 		var jobs []engine.Job
 		for _, version := range versions {
 			versionNode, err := tree.GetNodeForPath(r.node, version.Path)

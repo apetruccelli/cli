@@ -272,13 +272,22 @@ func (r *Registry) Migrate(ctx context.Context) error {
 		}
 	}
 
+	// Apply the opt-in package selector allow-list (packageFilters). When set,
+	// only the named packages are migrated; runs before the destination index is
+	// built so the index only covers selected work. No-op when unset.
+	if len(r.mapping.PackageFilters) > 0 {
+		originalCount := len(pkgs)
+		pkgs = util.FilterPackagesBySelectors(pkgs, r.mapping.PackageFilters)
+		logger.Info().Msgf("Package selector filter: %d -> %d packages", originalCount, len(pkgs))
+	}
+
 	if r.artifactType == types.COMPOSER &&
 		composerPkgsBeforeFilters > 0 &&
 		len(pkgs) == 0 &&
-		(len(r.mapping.IncludePatterns) > 0 || len(r.mapping.ExcludePatterns) > 0) {
+		(len(r.mapping.IncludePatterns) > 0 || len(r.mapping.ExcludePatterns) > 0 || len(r.mapping.PackageFilters) > 0) {
 		warnMsg := fmt.Sprintf(
 			"Registry %s: Composer package filters reduced %d package(s) to 0; nothing will be migrated — "+
-				"use vendor/package names (e.g. harness/migtest, acme/*), not zip basenames, in includePatterns and excludePatterns",
+				"use vendor/package names (e.g. harness/migtest, acme/*), not zip basenames, in includePatterns, excludePatterns, and packageFilters",
 			r.srcRegistry, composerPkgsBeforeFilters,
 		)
 		logger.Warn().Msg(warnMsg)
