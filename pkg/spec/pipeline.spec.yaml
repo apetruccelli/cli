@@ -547,6 +547,7 @@ commands:
         description: Branch to execute (for remote pipelines)
       - name: input-set
         description: Input set identifier to apply when executing
+        is_multi: true
       - name: input
         description: "Runtime input as key=value (repeatable); e.g. --input loop_count=5"
         is_multi: true
@@ -557,7 +558,7 @@ commands:
         description: Stream logs live after execution starts; exits when the execution reaches a terminal state
     endpoint:
       method: POST
-      path: /pipeline/api/pipeline/execute/{{ctx.id}}
+      path: '{{len(flags["input-set"]) > 0 ? "/pipeline/api/pipeline/execute/" + ctx.id + "/inputSetList" : "/pipeline/api/pipeline/execute/" + ctx.id}}'
       item_expr: it.data.planExecution
       text_header: "\nExecution started successfully.\n"
       text_footer: |
@@ -571,7 +572,6 @@ commands:
       body_fn: execute_body
       query_params:
         branch: flags.branch
-        inputSetIdentifiers: flags["input-set"]
 
   - command: execute pipeline:dynamic
     verb: execute
