@@ -455,6 +455,30 @@ commands:
       - name: origin-source-file
         description: "Path to orig source tarball — only for .dsc uploads"
 
+  - command: push artifact:terraform
+    verb: push
+    noun: artifact
+    noun_variant: terraform
+    short: Push a Terraform module or provider to a Harness registry
+    has_args: true
+    id_allow_slash: false
+    id_label: "<registry>"
+    args_label: "<local-dir-or-archive>"
+    completion_seq:
+      - completion_noun: registry
+    handler_type: workflow
+    workflow_id: push_artifact_terraform
+    flags:
+      - name: namespace
+        description: "Terraform namespace (required)"
+        required: true
+      - name: name
+        description: "Module name (required for module uploads)"
+      - name: provider
+        description: "Module provider, e.g. aws, gcp (required for module uploads)"
+      - name: version
+        description: "Module or provider version, semver (required for module uploads)"
+
   - command: push artifact:conan
     verb: push
     noun: artifact

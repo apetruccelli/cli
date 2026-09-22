@@ -23,6 +23,7 @@ func ModuleInit(reg registry.ModuleRegistrar) {
 	reg.RegisterWorkflow("push_artifact_swift", pushSwiftArtifact)
 	reg.RegisterWorkflow("push_artifact_ruby", pushRubyArtifact)
 	reg.RegisterWorkflow("push_artifact_puppet", pushPuppetArtifact)
+	reg.RegisterWorkflow("push_artifact_terraform", pushTerraformArtifact)
 	reg.RegisterWorkflow("push_artifact_helm", pushHelmArtifact)
 	reg.RegisterWorkflow("push_artifact_docker", pushDockerArtifact)
 	reg.RegisterWorkflow(pullArtifactHandlerID, pullArtifactHandler)
