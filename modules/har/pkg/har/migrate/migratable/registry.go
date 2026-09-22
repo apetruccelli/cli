@@ -324,6 +324,11 @@ func (r *Registry) Migrate(ctx context.Context) error {
 		}
 	}
 
+	var filesByPkg map[string][]types.File
+	if r.artifactType == types.CRAN {
+		filesByPkg = util.BuildCranPackageFilesMap(files)
+	}
+
 	var jobs []engine.Job
 	for _, pkg := range pkgs {
 		treeNode, err2 := tree.GetNodeForPath(root, pkg.Path)
@@ -331,8 +336,12 @@ func (r *Registry) Migrate(ctx context.Context) error {
 			logger.Error().Msgf("Failed to get node for path %s", pkg.Path)
 			return fmt.Errorf("get node for path %s failed: %w", pkg.Path, err2)
 		}
+		var pkgFiles []types.File
+		if filesByPkg != nil {
+			pkgFiles = filesByPkg[pkg.Name]
+		}
 		job := NewPackageJob(r.srcAdapter, r.destAdapter, r.srcRegistry, r.sourcePackageHostname, r.destRegistry, r.artifactType, pkg, treeNode,
-			r.stats, r.mapping, r.config, r.registry, r.dryRunStats, unfilteredRoot, existingIndex)
+			r.stats, r.mapping, r.config, r.registry, r.dryRunStats, unfilteredRoot, existingIndex, pkgFiles)
 		jobs = append(jobs, job)
 	}
 

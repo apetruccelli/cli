@@ -75,5 +75,12 @@
     "url": "http://localhost:8081/artifactory/swift-local",
     "description": "Mock Swift Local Repository",
     "packageType": "swift"
+  },
+  "cran-local": {
+    "key": "cran-local",
+    "type": "LOCAL",
+    "url": "http://localhost:8081/artifactory/cran-local",
+    "description": "Mock CRAN Local Repository",
+    "packageType": "cran"
   }
 }
