@@ -970,9 +970,10 @@ func (r *Registry) bindExternalCmd(cmd *cobra.Command, cs *spec.CommandSpec) {
 
 // bindWorkflowCmd wires flags and RunE for a workflow-backed command.
 func (r *Registry) bindWorkflowCmd(cmd *cobra.Command, cs *spec.CommandSpec, fn WorkflowFn) {
-	addFlags(cmd.Flags(), specFormat, specJson, specYaml, specOut, specRaw)
 	if cs.VerbHandler == VerbList {
-		addFlags(cmd.Flags(), specColumns, specNoHeaders, specListColumns)
+		addFlags(cmd.Flags(), specFormatList, specJson, specYaml, specOut, specRaw, specColumns, specNoHeaders, specListColumns)
+	} else {
+		addFlags(cmd.Flags(), specFormat, specJson, specYaml, specOut, specRaw)
 	}
 	if verbRegistry[cs.Verb].NounPair {
 		if cs.MigrateFrom.EffectivePresence() != spec.MigratePresenceNone {
@@ -1038,7 +1039,7 @@ func (r *Registry) bindEndpointCmdFlags(cmd *cobra.Command, cs *spec.CommandSpec
 
 	switch cs.VerbHandler {
 	case VerbList:
-		addFlags(cmd.Flags(), specFormat, specJson, specYaml, specColumns, specNoHeaders, specRaw, specListColumns)
+		addFlags(cmd.Flags(), specFormatList, specJson, specYaml, specColumns, specNoHeaders, specRaw, specListColumns)
 	case VerbGet:
 		addFlags(cmd.Flags(), specFormat, specJson, specYaml, specRaw, specFields, specListFields)
 		cmd.RegisterFlagCompletionFunc("fields", func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
