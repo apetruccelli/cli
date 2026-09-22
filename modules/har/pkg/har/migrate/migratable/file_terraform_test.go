@@ -170,6 +170,9 @@ func TestFileMigrateTerraformAlreadyExists(t *testing.T) {
 	if len(stats.FileStats) != 1 || stats.FileStats[0].Status != types.StatusSkip {
 		t.Errorf("stat = %+v, want StatusSkip", stats.FileStats)
 	}
+	if stats.FileStats[0].Reason != types.SkipReasonAlreadyExists {
+		t.Errorf("Reason = %q, want %q", stats.FileStats[0].Reason, types.SkipReasonAlreadyExists)
+	}
 }
 
 func TestFileMigrateTerraformUploadError(t *testing.T) {

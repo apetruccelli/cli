@@ -151,6 +151,7 @@ func (r *Package) Pre(ctx context.Context) error {
 				Uri:      r.pkg.Version,
 				Size:     int64(r.pkg.Size),
 				Status:   types.StatusSkip,
+				Reason:   types.SkipReasonAlreadyExists,
 			}
 			r.stats.FileStats = append(r.stats.FileStats, stat)
 			return nil
@@ -206,6 +207,7 @@ func (r *Package) Pre(ctx context.Context) error {
 					Uri:      r.pkg.Name + ":" + tag,
 					Size:     0,
 					Status:   types.StatusSkip,
+					Reason:   types.SkipReasonAlreadyExists,
 				}
 				r.stats.FileStats = append(r.stats.FileStats, stat)
 			}
@@ -552,6 +554,7 @@ func (r *Package) migrateComposerVersion(ctx context.Context, v types.Version) e
 	if err != nil {
 		if errors.Is(err, types.ErrArtifactAlreadyExists) {
 			stat.Status = types.StatusSkip
+			stat.Reason = types.SkipReasonAlreadyExists
 			pterm.Info.Println(fmt.Sprintf("%s already exists, skipping", title))
 		} else {
 			r.logger.Error().Err(err).Msg("Failed to upload file")
@@ -797,6 +800,7 @@ func (r *Package) migrateHelmHTTP(ctx context.Context) error {
 	if err != nil {
 		if errors.Is(err, types.ErrArtifactAlreadyExists) {
 			stat.Status = types.StatusSkip
+			stat.Reason = types.SkipReasonAlreadyExists
 			pterm.Info.Println(fmt.Sprintf("%s already exists, skipping", title))
 			r.stats.FileStats = append(r.stats.FileStats, stat)
 			return nil
@@ -845,6 +849,7 @@ func (r *Package) migrateHelmHTTPProv(ctx context.Context) {
 	if err != nil {
 		if errors.Is(err, types.ErrArtifactAlreadyExists) {
 			stat.Status = types.StatusSkip
+			stat.Reason = types.SkipReasonAlreadyExists
 			pterm.Info.Println(fmt.Sprintf("Provenance %s already exists, skipping", provName))
 		} else {
 			r.logger.Error().Err(err).Msgf("Failed to upload provenance %s", provName)
@@ -1035,6 +1040,7 @@ func (r *Package) migrateConan(ctx context.Context) error {
 		if ulErr != nil {
 			if errors.Is(ulErr, types.ErrArtifactAlreadyExists) {
 				stat.Status = types.StatusSkip
+				stat.Reason = types.SkipReasonAlreadyExists
 				pterm.Info.Println(fmt.Sprintf("%s already exists, skipping", title))
 			} else {
 				r.logger.Error().Err(ulErr).Msgf("Failed to upload Conan file %s", entry.FileName)
@@ -1095,6 +1101,7 @@ func (r *Package) migrateCran(ctx context.Context) error {
 					Uri:      file.Uri,
 					Size:     int64(file.Size),
 					Status:   types.StatusSkip,
+					Reason:   types.SkipReasonAlreadyExists,
 				})
 				continue
 			}
@@ -1130,6 +1137,7 @@ func (r *Package) migrateCran(ctx context.Context) error {
 		if err != nil {
 			if errors.Is(err, types.ErrArtifactAlreadyExists) {
 				stat.Status = types.StatusSkip
+				stat.Reason = types.SkipReasonAlreadyExists
 				pterm.Info.Println(fmt.Sprintf("%s already exists, skipping", title))
 			} else {
 				r.logger.Error().Err(err).Msgf("Failed to upload CRAN file %s", file.Name)
