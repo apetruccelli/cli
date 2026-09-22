@@ -101,6 +101,9 @@ type Config struct {
 	// Summary, when true, prints condensed per-status counts instead of the
 	// full per-file table.
 	Summary bool `yaml:"summary"`
+	// ResultFile, when set, is a path to write one JSON-lines record per
+	// per-coordinate result (types.FileStat) for automation to consume.
+	ResultFile string `yaml:"resultFile,omitempty"`
 	Source      RegistryConfig    `yaml:"source"`
 	Dest        RegistryConfig    `yaml:"destination"`
 	Mappings    []RegistryMapping `yaml:"mappings"`

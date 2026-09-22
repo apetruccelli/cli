@@ -102,6 +102,18 @@ func (m *MigrationService) Run(ctx context.Context) error {
 		logger.Info().RawJSON("file_stats", jsonData).Int("total_files", len(transferStats.FileStats)).Msg("Migration file statistics")
 	}
 
+	// Machine-readable per-coordinate result file (opt-in) — written BEFORE the
+	// exit-code decision so automation gets the full picture even on failure.
+	if m.config.ResultFile != "" {
+		if err := writeResultFile(m.config.ResultFile, transferStats.FileStats); err != nil {
+			logger.Error().Err(err).Str("path", m.config.ResultFile).Msg("Failed to write result file")
+			engineErr = errors.Join(engineErr, fmt.Errorf("write result file: %w", err))
+		} else {
+			logger.Info().Str("path", m.config.ResultFile).Int("records", len(transferStats.FileStats)).
+				Msg("Wrote per-coordinate result file")
+		}
+	}
+
 	// Exit-code contract: a migration with ANY failure fails the process — no
 	// opt-out. Failures are (a) engine-level errors (enumeration aborts, job
 	// panics) or (b) any per-coordinate StatusFail stat.
@@ -139,6 +151,29 @@ func printSummary(stats []types.FileStat) {
 	fmt.Printf("  %-10s %d\n", "Skipped :", counts[types.StatusSkip])
 	fmt.Printf("  %-10s %d\n", "Failed  :", counts[types.StatusFail])
 	fmt.Printf("  %-10s %d\n", "Total   :", len(stats))
+}
+
+// writeResultFile writes one JSON object per FileStat (JSON-lines) to path,
+// creating parent directories as needed.
+func writeResultFile(path string, fileStats []types.FileStat) error {
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create result file directory: %w", err)
+		}
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create result file: %w", err)
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	for _, fs := range fileStats {
+		if err := enc.Encode(fs); err != nil {
+			return fmt.Errorf("encode result record: %w", err)
+		}
+	}
+	return nil
 }
 
 func (m *MigrationService) writeDryRunOutput(logger zerolog.Logger) error {

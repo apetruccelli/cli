@@ -1101,6 +1101,8 @@ commands:
       - name: summary
         description: "Print a condensed status summary instead of the full per-file table"
         is_bool: true
+      - name: result-file
+        description: "Path to a JSON-lines file to write one per-coordinate result record (overrides config)"
 
   - command: configure registry:npm
     verb: configure

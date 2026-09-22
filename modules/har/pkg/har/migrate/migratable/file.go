@@ -234,10 +234,16 @@ func (r *File) Migrate(ctx context.Context) error {
 			Status:   types.StatusSuccess,
 		}
 		if err != nil {
-			logger.Error().Err(err).Msg("Failed to upload file")
-			stat.Status = types.StatusFail
-			stat.Error = err.Error()
-			pterm.Error.Println(title)
+			if errors.Is(err, types.ErrArtifactAlreadyExists) {
+				stat.Status = types.StatusSkip
+				stat.Reason = types.SkipReasonAlreadyExists
+				pterm.Info.Println(fmt.Sprintf("%s already exists, skipping", title))
+			} else {
+				logger.Error().Err(err).Msg("Failed to upload file")
+				stat.Status = types.StatusFail
+				stat.Error = err.Error()
+				pterm.Error.Println(title)
+			}
 		} else {
 			pterm.Success.Println(title)
 		}
