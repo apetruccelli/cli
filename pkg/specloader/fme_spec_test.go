@@ -5,7 +5,9 @@ package specloader
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -148,6 +150,45 @@ func TestFMESpec_GetFeatureFlag(t *testing.T) {
 	}
 	if strings.Contains(body, "entity") {
 		t.Fatalf("output still references entity wrapper: %s", body)
+	}
+}
+
+// TestFMESpec_GetFeatureFlag_TagsOwnersTextFormat drives "get feature_flag"
+// in default text format and asserts the tags/owners fields render their
+// joined names instead of blank — the exprs used method-call syntax
+// (it.tags.map(t, t.name).join(", ")) which expr-lang silently fails to
+// evaluate at runtime (map/join are only valid as bare builtin calls with a
+// "#" predicate, e.g. join(map(it.tags, {#.name}), ", ")); JSON/YAML format
+// didn't surface it since they serialize raw data without evaluating expr.
+func TestFMESpec_GetFeatureFlag_TagsOwnersTextFormat(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("get", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("get feature_flag: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"name":"my-flag","description":"desc","trafficType":{"name":"user"},"status":"ACTIVE","rolloutStatus":{"name":"Ramp"},"tags":[{"id":"t-1","name":"demo"}],"owners":[{"id":"u-1","name":"alice","type":"USER"}],"createdAt":"2026-01-01T00:00:00Z"}`
+	srv, _ := fmeCaptureServer(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "text"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	body := fmeReadOut(t, ctx)
+	if !strings.Contains(body, "demo") {
+		t.Fatalf("output missing tag %q (map/join expr silently failed): %s", "demo", body)
+	}
+	if !strings.Contains(body, "alice") {
+		t.Fatalf("output missing owner %q (map/join expr silently failed): %s", "alice", body)
 	}
 }
 
@@ -366,5 +407,241 @@ func TestFMESpec_ListRolloutStatus(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("output missing %q: %s", want, body)
 		}
+	}
+}
+
+// fmeCaptured records one request's method/path/query/body — used by
+// fmeSequenceServer for multi-request flows (e.g. get-then-patch update).
+type fmeCaptured struct {
+	method   string
+	path     string
+	rawQuery string
+	body     []byte
+}
+
+// fmeSequenceServer returns a different response per call, in order,
+// recording every request. Extra calls beyond len(resps) get "{}".
+func fmeSequenceServer(t *testing.T, resps []string) (*httptest.Server, *[]fmeCaptured) {
+	t.Helper()
+	caps := &[]fmeCaptured{}
+	i := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := fmeCaptured{method: r.Method, path: r.URL.Path, rawQuery: r.URL.RawQuery}
+		c.body, _ = io.ReadAll(r.Body)
+		*caps = append(*caps, c)
+		resp := "{}"
+		if i < len(resps) {
+			resp = resps[i]
+			i++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, resp)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, caps
+}
+
+// TestFMESpec_ListFeatureFlag_StatusFilter asserts --status maps to the
+// "status" query param (matching @QueryParam("status") on
+// FeatureFlagResource.list in service-web-admin), not "rollout_statuses"
+// (FME-17257 fix — these are different v4 concepts; the old mapping made
+// --status a silent no-op, since the API defaults to ACTIVE-only when the
+// "status" param is absent/unrecognized).
+func TestFMESpec_ListFeatureFlag_StatusFilter(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("list", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("list feature_flag: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"data":[],"limit":20,"offset":0,"totalCount":0}`
+	srv, _, query := fmeCaptureServerWithQuery(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"status": "ACTIVE"}
+
+	if err := registry.RunListEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunListEndpoint: %v", err)
+	}
+
+	if !strings.Contains(*query, "status=ACTIVE") {
+		t.Fatalf("query = %q, want status=ACTIVE", *query)
+	}
+	if strings.Contains(*query, "rollout_statuses=") {
+		t.Fatalf("query = %q, --status must not map to rollout_statuses", *query)
+	}
+}
+
+// TestFMESpec_CreateFeatureFlag drives "create feature_flag" and asserts the
+// POST body carries name/trafficType from ctx.id/--traffic-type, and that the
+// response unwraps via item_expr: it.entity.
+func TestFMESpec_CreateFeatureFlag(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create feature_flag: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"entity":{"name":"new-flag","trafficType":{"name":"user"},"status":"ACTIVE"}}`
+	srv, caps := fmeSequenceServer(t, []string{fixture})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "new-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"traffic-type": "user"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if len(*caps) != 1 {
+		t.Fatalf("got %d requests, want 1", len(*caps))
+	}
+	got := (*caps)[0]
+	if got.method != "POST" || got.path != "/fme/api/v4/feature-flags" {
+		t.Fatalf("request = %s %s, want POST /fme/api/v4/feature-flags", got.method, got.path)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if body["name"] != "new-flag" || body["trafficType"] != "user" {
+		t.Fatalf("body = %v, want name=new-flag trafficType=user", body)
+	}
+
+	out := fmeReadOut(t, ctx)
+	if !strings.Contains(out, "new-flag") {
+		t.Fatalf("output missing new-flag (item_expr it.entity did not unwrap): %s", out)
+	}
+}
+
+// TestFMESpec_UpdateFeatureFlag drives "update feature_flag --set description=..."
+// and asserts the get-then-patch PATCH body is scoped to {description: ...} only
+// (FME-17257 fix — previously sent the whole GET'd object back, including
+// immutable fields and nested objects, causing a 400 on every update).
+func TestFMESpec_UpdateFeatureFlag(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-flag","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE","rolloutStatus":{"name":"Ramp"},"createdAt":"2026-01-01T00:00:00Z"}`
+	patchResp := `{"entity":{"name":"my-flag","description":"new desc"}}`
+	refetchResp := `{"name":"my-flag","description":"new desc","trafficType":{"name":"user"},"status":"ACTIVE","rolloutStatus":{"name":"Ramp"},"createdAt":"2026-01-01T00:00:00Z"}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp, refetchResp})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.SetArgs = map[string]string{"description": "new desc"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if len(*caps) != 3 {
+		t.Fatalf("got %d requests, want 3 (GET, PATCH, refetch GET)", len(*caps))
+	}
+	patch := (*caps)[1]
+	if patch.method != "PATCH" {
+		t.Fatalf("2nd request method = %q, want PATCH", patch.method)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if len(body) != 1 || body["description"] != "new desc" {
+		t.Fatalf("PATCH body = %v, want exactly {description: new desc} — no leaked id/createdAt/nested objects", body)
+	}
+}
+
+// TestFMESpec_UpdateFeatureFlag_RolloutStatus drives
+// "update feature_flag --set rollout_status=<id>" and asserts the PATCH body
+// sends {rolloutStatus: {id: ...}} — the v4 API rejects {rolloutStatus: {name: ...}}
+// (the shape documented in Confluence) with a 400 "Invalid json structure".
+func TestFMESpec_UpdateFeatureFlag_RolloutStatus(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-flag","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE","rolloutStatus":{"id":"rs-1","name":"Ramp"},"createdAt":"2026-01-01T00:00:00Z"}`
+	patchResp := `{"entity":{"name":"my-flag","rolloutStatus":{"id":"rs-2","name":"Ramping"}}}`
+	refetchResp := `{"name":"my-flag","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE","rolloutStatus":{"id":"rs-2","name":"Ramping"},"createdAt":"2026-01-01T00:00:00Z"}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp, refetchResp})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.SetArgs = map[string]string{"rollout_status": "rs-2"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	rs, ok := body["rolloutStatus"].(map[string]any)
+	if !ok || rs["id"] != "rs-2" {
+		t.Fatalf("PATCH body = %v, want rolloutStatus.id=rs-2 (not rolloutStatus.name)", body)
+	}
+}
+
+// TestFMESpec_DeleteFeatureFlag drives "delete feature_flag" and asserts the
+// DELETE hits the expected path with no body.
+func TestFMESpec_DeleteFeatureFlag(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete feature_flag: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if len(*caps) != 1 {
+		t.Fatalf("got %d requests, want 1", len(*caps))
+	}
+	got := (*caps)[0]
+	if got.method != "DELETE" || got.path != "/fme/api/v4/feature-flags/my-flag" {
+		t.Fatalf("request = %s %s, want DELETE /fme/api/v4/feature-flags/my-flag", got.method, got.path)
 	}
 }

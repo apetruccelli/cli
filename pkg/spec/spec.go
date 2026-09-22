@@ -306,7 +306,10 @@ type FieldDef struct {
 	MutablePath string `yaml:"mutable_path,omitempty"`
 	// FieldType optionally changes how the value is rendered or updated.
 	// Supported: "multiline_text" (renders raw block below other fields), "yaml" (alias for multiline_text, use for actual YAML content),
-	// "tags" (tag-map handling), "set" (string-set handling), "ts" (epoch-ms timestamp).
+	// "tags" (tag-map handling), "set" (string-set handling), "ts" (epoch-ms timestamp),
+	// "name_ref_set" (--set field.member adds {"name": member} to the array, e.g. FME tags),
+	// "owner_ref_set" (--set field.user:<email> or field.group:<identifier> adds an FME
+	// OwnerReferenceInput {"type": "USER"|"GROUP", "email"|"identifier": ...} to the array).
 	FieldType string `yaml:"field_type,omitempty"`
 	// Align controls horizontal alignment in the table renderer.
 	// Supported: "right". Empty means left (default).
@@ -537,6 +540,11 @@ type EndpointSpec struct {
 	// GetQueryParams overrides query_params for the GET leg of get-then-put-kv.
 	// Use when the GET and PUT endpoints require different query parameters.
 	GetQueryParams map[string]string `yaml:"get_query_params,omitempty"`
+	// RefetchAfterWrite re-runs the GET leg after a successful get-then-patch (or
+	// get-then-put) write and displays that fresh response instead of the write
+	// response body. Use when the API's PATCH/PUT response omits or stales fields
+	// (e.g. arrays like owners/tags) that a subsequent GET returns correctly.
+	RefetchAfterWrite bool `yaml:"refetch_after_write,omitempty"`
 	// CreateStrategy declares how create commands build the POST body from --set args.
 	// "set-fields": seed from create_body_init, apply --set mutations, wrap under create_body_wrap, then POST.
 	// Enables --set / positional key=value args and --list-fields on create commands.

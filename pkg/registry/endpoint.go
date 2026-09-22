@@ -804,7 +804,28 @@ func runGetThenUpdate(ctx *cmdctx.Ctx, ep *spec.EndpointSpec, c *client.Client, 
 		Body:            updateBody,
 		BodyContentType: resolveContentType(ep, method),
 	})
-	return result, err
+	if err != nil || !ep.RefetchAfterWrite {
+		return result, err
+	}
+
+	// Some APIs return a partial/stale entity in the write response (e.g. omitting
+	// arrays like owners/tags that a fresh GET reflects correctly). Re-fetch and
+	// splice the fresh entity into the same spot item_expr expects it.
+	freshResult, _, gerr := c.Get(getPath, getQP)
+	if gerr != nil {
+		return result, nil
+	}
+	if ep.ItemExpr == "" || ep.ItemExpr == "it" {
+		return freshResult, nil
+	}
+	if rel, ok := strings.CutPrefix(ep.ItemExpr, "it."); ok {
+		if m, ok := result.(map[string]any); ok {
+			setDotPath(m, rel, freshResult)
+			return m, nil
+		}
+		return map[string]any{rel: freshResult}, nil
+	}
+	return result, nil
 }
 
 // runGetThenPutKV implements the "get-then-put-kv" update strategy for APIs
@@ -960,6 +981,29 @@ func applyMutations(mutable map[string]any, setArgs map[string]string, delArgs [
 				arr = append(arr, member)
 			}
 			setDotPath(mutable, rel, arr)
+		case "name_ref_set":
+			if len(parts) < 2 {
+				return fmt.Errorf("--set %s: name-ref fields require a member (e.g. --set tags.backend)", key)
+			}
+			member := parts[1]
+			arr := getDotPathSlice(mutable, rel)
+			if !nameRefContains(arr, member) {
+				arr = append(arr, map[string]any{"name": member})
+			}
+			setDotPath(mutable, rel, arr)
+		case "owner_ref_set":
+			if len(parts) < 2 {
+				return fmt.Errorf("--set %s: owner-ref fields require a member (e.g. --set owners.user:alice@example.com or --set owners.group:platform-team)", key)
+			}
+			ownerRef, err := parseOwnerRef(parts[1])
+			if err != nil {
+				return fmt.Errorf("--set %s: %w", key, err)
+			}
+			arr := getDotPathSlice(mutable, rel)
+			if !ownerRefContains(arr, ownerRef) {
+				arr = append(arr, ownerRef)
+			}
+			setDotPath(mutable, rel, arr)
 		default: // scalar
 			setDotPath(mutable, rel, val)
 		}
@@ -993,6 +1037,23 @@ func applyMutations(mutable map[string]any, setArgs map[string]string, delArgs [
 			member := parts[1]
 			arr := getDotPathSlice(mutable, rel)
 			setDotPath(mutable, rel, sliceRemove(arr, member))
+		case "name_ref_set":
+			if len(parts) < 2 {
+				return fmt.Errorf("--del %s: name-ref fields require a member (e.g. --del tags.backend)", key)
+			}
+			member := parts[1]
+			arr := getDotPathSlice(mutable, rel)
+			setDotPath(mutable, rel, nameRefRemove(arr, member))
+		case "owner_ref_set":
+			if len(parts) < 2 {
+				return fmt.Errorf("--del %s: owner-ref fields require a member (e.g. --del owners.user:alice@example.com)", key)
+			}
+			ownerRef, err := parseOwnerRef(parts[1])
+			if err != nil {
+				return fmt.Errorf("--del %s: %w", key, err)
+			}
+			arr := getDotPathSlice(mutable, rel)
+			setDotPath(mutable, rel, ownerRefRemove(arr, ownerRef))
 		default: // scalar
 			setDotPath(mutable, rel, nil)
 		}
@@ -1073,6 +1134,75 @@ func sliceRemove(s []any, v string) []any {
 		if fmt.Sprint(el) != v {
 			out = append(out, el)
 		}
+	}
+	return out
+}
+
+// nameRefContains reports whether s contains an object with "name" == v,
+// e.g. {"name": "backend"} as used by FME tag references.
+func nameRefContains(s []any, v string) bool {
+	for _, el := range s {
+		if m, ok := el.(map[string]any); ok && fmt.Sprint(m["name"]) == v {
+			return true
+		}
+	}
+	return false
+}
+
+func nameRefRemove(s []any, v string) []any {
+	out := make([]any, 0, len(s))
+	for _, el := range s {
+		if m, ok := el.(map[string]any); ok && fmt.Sprint(m["name"]) == v {
+			continue
+		}
+		out = append(out, el)
+	}
+	return out
+}
+
+// parseOwnerRef parses a "user:<email>" or "group:<identifier>" member string
+// into an FME OwnerReferenceInput object.
+func parseOwnerRef(member string) (map[string]any, error) {
+	parts := strings.SplitN(member, ":", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf(`owner ref must be "user:<email>" or "group:<identifier>" (got %q)`, member)
+	}
+	switch strings.ToLower(parts[0]) {
+	case "user":
+		return map[string]any{"type": "USER", "email": parts[1]}, nil
+	case "group":
+		return map[string]any{"type": "GROUP", "identifier": parts[1]}, nil
+	default:
+		return nil, fmt.Errorf(`owner ref must be prefixed with "user:" or "group:" (got %q)`, parts[0])
+	}
+}
+
+func ownerRefEqual(a, b map[string]any) bool {
+	if fmt.Sprint(a["type"]) != fmt.Sprint(b["type"]) {
+		return false
+	}
+	if strings.EqualFold(fmt.Sprint(a["type"]), "USER") {
+		return fmt.Sprint(a["email"]) == fmt.Sprint(b["email"])
+	}
+	return fmt.Sprint(a["identifier"]) == fmt.Sprint(b["identifier"])
+}
+
+func ownerRefContains(s []any, o map[string]any) bool {
+	for _, el := range s {
+		if m, ok := el.(map[string]any); ok && ownerRefEqual(m, o) {
+			return true
+		}
+	}
+	return false
+}
+
+func ownerRefRemove(s []any, o map[string]any) []any {
+	out := make([]any, 0, len(s))
+	for _, el := range s {
+		if m, ok := el.(map[string]any); ok && ownerRefEqual(m, o) {
+			continue
+		}
+		out = append(out, el)
 	}
 	return out
 }

@@ -27,6 +27,15 @@ nouns:
       - id: rollout_status
         label: Rollout Status
         expr: it.rolloutStatus.name ?? ""
+        mutable_path: rolloutStatus.id
+      - id: tags
+        expr: join(map(it.tags, {#.name}), ", ")
+        mutable_path: tags
+        field_type: name_ref_set
+      - id: owners
+        expr: join(map(it.owners, {#.name}), ", ")
+        mutable_path: owners
+        field_type: owner_ref_set
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -142,7 +151,7 @@ commands:
         organization_identifier: auth.org
         project_identifier: auth.project
         name: flags.search
-        rollout_statuses: flags.status
+        status: flags.status
       paging:
         paging_strategy: offset_limit
         page_index_param: offset
@@ -206,8 +215,9 @@ commands:
       path: /fme/api/v4/feature-flags/{{ctx.id}}
       get_path: /fme/api/v4/feature-flags/{{ctx.id}}
       update_strategy: get-then-patch
-      update_body_pick: it
+      update_body_pick: "{description: it.description}"
       update_body_wrap: ""
+      refetch_after_write: true
       query_params:
         account_id: auth.account
         organization_identifier: auth.org
