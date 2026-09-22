@@ -92,7 +92,11 @@ func (m *MigrationService) Run(ctx context.Context) error {
 		return m.writeDryRunOutput(logger)
 	}
 
-	printFileStats(transferStats.FileStats)
+	if m.config.Summary {
+		printSummary(transferStats.FileStats)
+	} else {
+		printFileStats(transferStats.FileStats)
+	}
 
 	if jsonData, err := json.MarshalIndent(transferStats.FileStats, "", "  "); err == nil {
 		logger.Info().RawJSON("file_stats", jsonData).Int("total_files", len(transferStats.FileStats)).Msg("Migration file statistics")
@@ -122,6 +126,19 @@ func printFileStats(stats []types.FileStat) {
 		tw.AppendRow(table.Row{s.Name, s.Registry, s.Size, string(s.Status), s.Error})
 	}
 	tw.Render()
+}
+
+func printSummary(stats []types.FileStat) {
+	counts := make(map[types.Status]int)
+	for _, s := range stats {
+		counts[s.Status]++
+	}
+
+	fmt.Println("\nMigration Summary of total files finalized for upload :")
+	fmt.Printf("  %-10s %d\n", "Success :", counts[types.StatusSuccess])
+	fmt.Printf("  %-10s %d\n", "Skipped :", counts[types.StatusSkip])
+	fmt.Printf("  %-10s %d\n", "Failed  :", counts[types.StatusFail])
+	fmt.Printf("  %-10s %d\n", "Total   :", len(stats))
 }
 
 func (m *MigrationService) writeDryRunOutput(logger zerolog.Logger) error {

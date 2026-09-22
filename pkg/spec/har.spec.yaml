@@ -1098,6 +1098,9 @@ commands:
       - name: dry-run
         description: "Dry run — discover files without uploading, write report to ./dry-run-output/"
         is_bool: true
+      - name: summary
+        description: "Print a condensed status summary instead of the full per-file table"
+        is_bool: true
 
   - command: configure registry:npm
     verb: configure

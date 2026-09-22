@@ -98,6 +98,9 @@ type Config struct {
 	Concurrency int               `yaml:"concurrency"`
 	Overwrite   bool              `yaml:"overwrite"`
 	DryRun      bool              `yaml:"dryRun"`
+	// Summary, when true, prints condensed per-status counts instead of the
+	// full per-file table.
+	Summary bool `yaml:"summary"`
 	Source      RegistryConfig    `yaml:"source"`
 	Dest        RegistryConfig    `yaml:"destination"`
 	Mappings    []RegistryMapping `yaml:"mappings"`

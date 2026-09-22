@@ -25,6 +25,7 @@ func executeRegistryMigrateHandler(ctx *cmdctx.Ctx) error {
 	concurrencyStr := cmdctx.GetString(ctx.FlagValues, "concurrency")
 	overwrite := cmdctx.GetBool(ctx.FlagValues, "overwrite")
 	dryRun := cmdctx.GetBool(ctx.FlagValues, "dry-run")
+	summary := cmdctx.GetBool(ctx.FlagValues, "summary")
 
 	cfg, err := types.LoadConfig(filePath)
 	if err != nil {
@@ -41,6 +42,9 @@ func executeRegistryMigrateHandler(ctx *cmdctx.Ctx) error {
 	}
 	if dryRun {
 		cfg.DryRun = true
+	}
+	if summary {
+		cfg.Summary = true
 	}
 
 	// Thread auth context into the destination (HAR) registry config.
