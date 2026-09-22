@@ -118,6 +118,8 @@ func (a *harAdapter) UploadFile(
 		err = a.client.uploadDebianFile(registry, f, file, metadata)
 	case types.PUPPET:
 		err = a.client.uploadPuppetFile(registry, f, file)
+	case types.RUBY:
+		err = a.client.uploadRubyFile(registry, f, file)
 	case types.CONAN:
 		err = a.client.uploadConanFile(registry, file, metadata)
 	default:
