@@ -233,8 +233,11 @@ func (r *Registry) Migrate(ctx context.Context) error {
 	// For PYTHON (IsAtomicVersionArtifact), build an unfilteredRoot from the
 	// original file list so version.go can recover distributions that were pruned
 	// by date or pattern filters. Other types pass nil.
+	// TERRAFORM also gets the unfilteredRoot: its provider versions are atomic
+	// multi-file versions too (all platform zips per version), but discovery
+	// happens inside Version.Migrate, which swaps to this tree — see version.go.
 	var unfilteredRoot *types.TreeNode
-	if dateFilterActive && util.IsAtomicVersionArtifact(currArtifactType) {
+	if dateFilterActive && (util.IsAtomicVersionArtifact(currArtifactType) || currArtifactType == types.TERRAFORM) {
 		recoveryFiles := originalFiles
 		if util.IsFileLevelFilterableArtifact(currArtifactType) &&
 			(len(r.mapping.IncludePatterns) > 0 || len(r.mapping.ExcludePatterns) > 0) {

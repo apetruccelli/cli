@@ -45,6 +45,7 @@ var (
 	HELM_HTTP   ArtifactType = "HELM_HTTP"
 	RUBY        ArtifactType = "RUBY"
 	CRAN        ArtifactType = "CRAN"
+	TERRAFORM   ArtifactType = "TERRAFORM"
 )
 
 // knownArtifactTypesList is the exhaustive, ordered list of valid ArtifactType
@@ -55,6 +56,7 @@ var (
 var knownArtifactTypesList = []ArtifactType{
 	DOCKER, HELM, HELM_LEGACY, GENERIC, PYTHON, MAVEN, NPM, NUGET,
 	RPM, GO, CONDA, COMPOSER, DART, RAW, SWIFT, DEBIAN, CONAN, PUPPET, HELM_HTTP, RUBY, CRAN,
+	TERRAFORM,
 }
 
 // knownArtifactTypes is the lookup set derived from knownArtifactTypesList.
