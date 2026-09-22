@@ -19,16 +19,32 @@ func init() {
 		_, core := splitLocalFlags(c)
 		return core
 	})
+	cobra.AddTemplateFunc("globalFlags", func(c *cobra.Command) *pflag.FlagSet {
+		global := pflag.NewFlagSet(c.Name(), pflag.ContinueOnError)
+		c.InheritedFlags().VisitAll(func(f *pflag.Flag) {
+			global.AddFlag(f)
+		})
+		if help := c.LocalFlags().Lookup("help"); help != nil {
+			global.AddFlag(help)
+		}
+		return global
+	})
 }
 
 // splitLocalFlags partitions cmd's local flags into command-specific ("own")
-// and built-in ("core") flags, per registry.IsCoreFlag. Both returned sets
-// share the same *pflag.Flag pointers as cmd.LocalFlags(), so hidden/
-// deprecated flags are still skipped by FlagUsages() as normal.
+// and built-in ("core") flags, per registry.IsCoreFlag. Cobra's own
+// auto-added "help" flag is excluded from both, since it's displayed under
+// Global Flags (see the "globalFlags" template func) rather than mixed in
+// with a command's real flags. Both returned sets share the same *pflag.Flag
+// pointers as cmd.LocalFlags(), so hidden/deprecated flags are still skipped
+// by FlagUsages() as normal.
 func splitLocalFlags(c *cobra.Command) (own, core *pflag.FlagSet) {
 	own = pflag.NewFlagSet(c.Name(), pflag.ContinueOnError)
 	core = pflag.NewFlagSet(c.Name(), pflag.ContinueOnError)
 	c.LocalFlags().VisitAll(func(f *pflag.Flag) {
+		if f.Name == "help" {
+			return
+		}
 		if registry.IsCoreFlag(f.Name) {
 			core.AddFlag(f)
 		} else {
@@ -61,14 +77,14 @@ Available Commands:{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help")
 Additional Commands:{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
   {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if (ownFlags .).HasAvailableFlags}}
 
-Flags:
+Command Flags:
 {{(ownFlags .).FlagUsages | trimTrailingWhitespaces}}{{end}}{{if (verbFlags .).HasAvailableFlags}}
 
 Common Flags:
-{{(verbFlags .).FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+{{(verbFlags .).FlagUsages | trimTrailingWhitespaces}}{{end}}{{if (globalFlags .).HasAvailableFlags}}
 
 Global Flags:
-{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasHelpSubCommands}}
+{{(globalFlags .).FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasHelpSubCommands}}
 
 Additional help topics:{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}
   {{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableSubCommands}}
