@@ -6,6 +6,7 @@ package specloader
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -366,5 +367,261 @@ func TestFMESpec_ListRolloutStatus(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("output missing %q: %s", want, body)
 		}
+	}
+}
+
+// TestFMESpec_ListFeatureFlagDefinition drives "list feature_flag:definition" and asserts
+// the flag-name positional arg maps to the feature_flag_name query param and get_id_expr
+// resolves off it.featureFlag.name (definitions are addressed by flag name, not environment id).
+func TestFMESpec_ListFeatureFlagDefinition(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("list", "feature_flag:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("list feature_flag:definition: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"data":[{"featureFlag":{"name":"cli-test-flag"},"environment":{"name":"Prod"},"defaultTreatment":"on","trafficAllocation":100,"isKilled":false,"createdAt":1778049995.725}],"limit":20,"offset":0,"totalCount":1}`
+	srv, path, query := fmeCaptureServerWithQuery(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Noun = "feature_flag"
+	ctx.ParentId = "cli-test-flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+
+	if err := registry.RunListEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunListEndpoint: %v", err)
+	}
+
+	if !strings.HasPrefix(*path, "/fme/api/v4/feature-flag-definitions") {
+		t.Fatalf("request path = %q, want prefix /fme/api/v4/feature-flag-definitions", *path)
+	}
+	if !strings.Contains(*query, "feature_flag_name=cli-test-flag") {
+		t.Fatalf("query = %q, want feature_flag_name=cli-test-flag (from parent-id arg)", *query)
+	}
+
+	body := fmeReadOut(t, ctx)
+	for _, want := range []string{"Prod", "on", "100"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("output missing %q: %s", want, body)
+		}
+	}
+}
+
+// TestFMESpec_GetFeatureFlagDefinition drives "get feature_flag:definition" and asserts
+// --env maps to the environment_id query param and item_expr resolves the flat item (it,
+// no {entity} wrapper — the API returns the definition directly on GET).
+func TestFMESpec_GetFeatureFlagDefinition(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("get", "feature_flag:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("get feature_flag:definition: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"defaultTreatment":"off","baselineTreatment":"off","trafficAllocation":50,"isKilled":false,"createdAt":1778049995.725}`
+	srv, path, query := fmeCaptureServerWithQuery(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "cli-test-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if *path != "/fme/api/v4/feature-flag-definitions/cli-test-flag" {
+		t.Fatalf("request path = %q, want /fme/api/v4/feature-flag-definitions/cli-test-flag", *path)
+	}
+	if !strings.Contains(*query, "environment_id=env-uuid-1") {
+		t.Fatalf("query = %q, want environment_id=env-uuid-1 (from --env flag)", *query)
+	}
+
+	body := fmeReadOut(t, ctx)
+	if !strings.Contains(body, `"trafficAllocation": 50`) {
+		t.Fatalf("output missing flat trafficAllocation field: %s", body)
+	}
+}
+
+// TestFMESpec_CreateFeatureFlagDefinition drives "create feature_flag:definition -f <file>"
+// and asserts the file body is POSTed as-is to the {flag-name} path with environment_id from
+// --env, and that item_expr unwraps the {entity, governance} envelope on the response.
+func TestFMESpec_CreateFeatureFlagDefinition(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "feature_flag:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create feature_flag:definition: command not found or missing endpoint spec")
+	}
+
+	var gotMethod, gotPath, gotQuery, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"entity":`+gotBody+`,"governance":null}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	fileBody := `{"treatments":[{"name":"on"},{"name":"off"}],"defaultTreatment":"off","baselineTreatment":"off","trafficAllocation":100,"defaultRule":[{"treatment":"off","size":100}],"rules":[]}`
+	filePath := filepath.Join(t.TempDir(), "def.json")
+	if err := os.WriteFile(filePath, []byte(fileBody), 0o600); err != nil {
+		t.Fatalf("writing input file: %v", err)
+	}
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "cli-test-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1", "file": filePath}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/fme/api/v4/feature-flag-definitions/cli-test-flag" {
+		t.Fatalf("request path = %q, want /fme/api/v4/feature-flag-definitions/cli-test-flag", gotPath)
+	}
+	if !strings.Contains(gotQuery, "environment_id=env-uuid-1") {
+		t.Fatalf("query = %q, want environment_id=env-uuid-1 (from --env flag)", gotQuery)
+	}
+	if gotBody != fileBody {
+		t.Fatalf("request body = %q, want file body sent as-is: %q", gotBody, fileBody)
+	}
+
+	out := fmeReadOut(t, ctx)
+	if !strings.Contains(out, `"trafficAllocation": 100`) {
+		t.Fatalf("output missing entity-unwrapped trafficAllocation: %s", out)
+	}
+}
+
+// TestFMESpec_UpdateFeatureFlagDefinition drives "update feature_flag:definition --set
+// default_treatment=on" through the get-then-patch strategy: GET fetches the current
+// definition, --set mutates the picked subtree via the field's mutable_path, and PATCH sends
+// the merged body as application/merge-patch+json (the FME v4 API's required content type,
+// applied automatically by resolveContentType's PATCH default since the spec sets no override).
+func TestFMESpec_UpdateFeatureFlagDefinition(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag:definition: command not found or missing endpoint spec")
+	}
+
+	getFixture := `{"defaultTreatment":"off","baselineTreatment":"off","trafficAllocation":50}`
+	var gotMethod, gotPath, gotQuery, gotBody, gotContentType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, getFixture)
+			return
+		}
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotContentType = r.Header.Get("Content-Type")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		fmt.Fprint(w, `{"entity":`+gotBody+`}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "cli-test-flag"
+	ctx.Noun = "feature_flag"
+	ctx.FieldsNoun = cs.FieldsNoun
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+	ctx.SetArgs = map[string]string{"default_treatment": "on"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if gotMethod != http.MethodPatch {
+		t.Fatalf("method = %q, want PATCH", gotMethod)
+	}
+	if gotPath != "/fme/api/v4/feature-flag-definitions/cli-test-flag" {
+		t.Fatalf("request path = %q, want /fme/api/v4/feature-flag-definitions/cli-test-flag", gotPath)
+	}
+	if !strings.Contains(gotQuery, "environment_id=env-uuid-1") {
+		t.Fatalf("query = %q, want environment_id=env-uuid-1 (from --env flag)", gotQuery)
+	}
+	if gotContentType != "application/merge-patch+json" {
+		t.Fatalf("Content-Type = %q, want application/merge-patch+json", gotContentType)
+	}
+	if !strings.Contains(gotBody, `"defaultTreatment":"on"`) {
+		t.Fatalf("PATCH body missing mutated defaultTreatment: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"baselineTreatment":"off"`) {
+		t.Fatalf("PATCH body missing carried-over baselineTreatment from GET: %s", gotBody)
+	}
+}
+
+// TestFMESpec_DeleteFeatureFlagDefinition drives "delete feature_flag:definition" and asserts
+// the DELETE request hits the {flag-name} path with environment_id from --env, and that
+// VerbHandler=delete suppresses body rendering (the API returns 200 with an entity body, but
+// delete commands print nothing unless a text_header/text_footer is declared).
+func TestFMESpec_DeleteFeatureFlagDefinition(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "feature_flag:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete feature_flag:definition: command not found or missing endpoint spec")
+	}
+
+	var gotMethod, gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"defaultTreatment":"off","baselineTreatment":"off","trafficAllocation":100,"isKilled":false}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "cli-test-flag"
+	ctx.Noun = "feature_flag"
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method = %q, want DELETE", gotMethod)
+	}
+	if gotPath != "/fme/api/v4/feature-flag-definitions/cli-test-flag" {
+		t.Fatalf("request path = %q, want /fme/api/v4/feature-flag-definitions/cli-test-flag", gotPath)
+	}
+	if !strings.Contains(gotQuery, "environment_id=env-uuid-1") {
+		t.Fatalf("query = %q, want environment_id=env-uuid-1 (from --env flag)", gotQuery)
 	}
 }
