@@ -182,9 +182,9 @@ func TestFMESpec_ListFMEEnvironment(t *testing.T) {
 	}
 
 	body := fmeReadOut(t, ctx)
-	for _, want := range []string{"Prod", "true", "ACTIVE"} {
+	for _, want := range []string{"env-uuid-1", "Prod", "true", "ACTIVE"} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("output missing %q: %s", want, body)
+			t.Fatalf("output missing %q (id column must be present so get/update/delete are usable off list output): %s", want, body)
 		}
 	}
 }
