@@ -739,6 +739,60 @@ func TestFMESpec_UpdateFeatureFlagDefinition(t *testing.T) {
 	if !strings.Contains(gotBody, `"baselineTreatment":"off"`) {
 		t.Fatalf("PATCH body missing carried-over baselineTreatment from GET: %s", gotBody)
 	}
+	// Neither --comment nor --title was passed, so their keys must be absent rather than
+	// null: under a merge patch, null is an instruction to delete the field.
+	for _, absent := range []string{`"comment"`, `"title"`} {
+		if strings.Contains(gotBody, absent) {
+			t.Fatalf("PATCH body contains %s though the flag was not passed; an unset body_param must be omitted, not sent as null: %s", absent, gotBody)
+		}
+	}
+}
+
+// TestFMESpec_UpdateFeatureFlagDefinition_AuditFields asserts --comment/--title reach the
+// PATCH body. They are write-only — v4 accepts them but never returns them — so they cannot
+// come from update_body_pick and are declared as body_params instead.
+func TestFMESpec_UpdateFeatureFlagDefinition_AuditFields(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag:definition: command not found or missing endpoint spec")
+	}
+
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, `{"defaultTreatment":"off","baselineTreatment":"off","trafficAllocation":50}`)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		fmt.Fprint(w, `{"entity":`+gotBody+`}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "cli-test-flag"
+	ctx.Noun = "feature_flag"
+	ctx.FieldsNoun = cs.FieldsNoun
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1", "comment": "audit note", "title": "my title"}
+	ctx.SetArgs = map[string]string{"default_treatment": "on"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	for _, want := range []string{`"comment":"audit note"`, `"title":"my title"`, `"defaultTreatment":"on"`} {
+		if !strings.Contains(gotBody, want) {
+			t.Fatalf("PATCH body missing %s: %s", want, gotBody)
+		}
+	}
 }
 
 // TestFMESpec_DeleteFeatureFlagDefinition drives "delete feature_flag:definition" and asserts

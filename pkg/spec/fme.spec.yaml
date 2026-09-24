@@ -377,8 +377,15 @@ commands:
       path: /fme/api/v4/feature-flag-definitions/{{ctx.id}}
       get_path: /fme/api/v4/feature-flag-definitions/{{ctx.id}}
       update_strategy: get-then-patch
-      update_body_pick: '{trafficAllocation: it.trafficAllocation, defaultTreatment: it.defaultTreatment, baselineTreatment: it.baselineTreatment, comment: flags.comment != "" ? flags.comment : nil, title: flags.title != "" ? flags.title : nil}'
+      update_body_pick: '{trafficAllocation: it.trafficAllocation, defaultTreatment: it.defaultTreatment, baselineTreatment: it.baselineTreatment}'
       update_body_wrap: ""
+      # comment/title are write-only: v4 accepts them as audit metadata but never stores or
+      # returns them, so there is nothing in the GET for update_body_pick to select. As
+      # body_params they are omitted entirely when the flag is unset — putting them in the
+      # pick sent "comment": null, which a merge patch reads as "delete this field".
+      body_params:
+        comment: 'flags.comment != "" ? flags.comment : nil'
+        title: 'flags.title != "" ? flags.title : nil'
       query_params:
         account_id: auth.account
         organization_identifier: auth.org
