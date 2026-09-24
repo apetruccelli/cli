@@ -31,11 +31,26 @@ nouns:
       - id: tags
         expr: join(map(it.tags, {#.name}), ", ")
         mutable_path: tags
-        field_type: name_ref_set
+        # v4 reads tags as {id, name} but writes them as {name}, so a member is just its
+        # name, and update_body_pick reshapes what was read into what can be written.
+        field_type: object_set
+        member_expr: "{name: member}"
+        member_identity: el.name
+        member_hint: <tag-name>
       - id: owners
         expr: join(map(it.owners, {#.name}), ", ")
         mutable_path: owners
-        field_type: owner_ref_set
+        # Users are addressed by id, not email: v4 returns owners with an id and no email,
+        # and a member has to be comparable against what was read for --del to match and
+        # --set to stay idempotent. Use "harness list user" to look an id up. Groups are
+        # written under "identifier" where users use "id".
+        field_type: object_set
+        member_expr: >-
+          lower(split(member, ":")[0]) == "user" ? {type: "USER", id: member[5:]} :
+          lower(split(member, ":")[0]) == "group" ? {type: "GROUP", identifier: member[6:]} :
+          nil
+        member_identity: 'el.type == "USER" ? "user:" + el.id : "group:" + el.identifier'
+        member_hint: user:<id> or group:<identifier>
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts

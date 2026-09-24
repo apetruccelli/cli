@@ -307,16 +307,26 @@ type FieldDef struct {
 	// FieldType optionally changes how the value is rendered or updated.
 	// Supported: "multiline_text" (renders raw block below other fields), "yaml" (alias for multiline_text, use for actual YAML content),
 	// "tags" (tag-map handling), "set" (string-set handling), "ts" (epoch-ms timestamp),
-	// "name_ref_set" (--set field.member adds {"name": member} to the array, e.g. FME tags),
-	// "owner_ref_set" (--set field.user:<id> or field.group:<identifier> adds an FME
-	// OwnerReferenceInput {"type": "USER", "id": ...} or {"type": "GROUP", "identifier": ...}
-	// to the array; users are addressed by ID because the read shape carries no email).
+	// "object_set" (an array of objects each addressed by one member string; see MemberExpr).
 	//
-	// The collection types ("tags", "set", "name_ref_set", "owner_ref_set") mutate the
-	// subtree that update_body_pick selected, so the pick MUST include the field or the
-	// mutation starts from an empty array and merge-patch replaces the whole collection.
+	// The collection types ("tags", "set", "object_set") mutate the subtree that
+	// update_body_pick selected, so the pick MUST include the field or the mutation
+	// starts from an empty array and merge-patch replaces the whole collection.
 	// Scalars are safe to omit from the pick, since --set creates the path.
 	FieldType string `yaml:"field_type,omitempty"`
+	// MemberExpr is required for field_type "object_set": an expr-lang expression turning
+	// the member string the user typed (bound as "member") into the object to store in the
+	// array, e.g. '{name: member}'. Returning nil rejects the member as malformed.
+	MemberExpr string `yaml:"member_expr,omitempty"`
+	// MemberIdentity is required for field_type "object_set": an expr-lang expression
+	// projecting one array element (bound as "el") to the string that identifies it,
+	// e.g. 'el.name'. Two elements with equal identities are the same member, which is what
+	// makes --set idempotent and lets --del match an element the API returned in a
+	// different shape than it accepts. An element with an empty identity never matches.
+	MemberIdentity string `yaml:"member_identity,omitempty"`
+	// MemberHint is the member syntax quoted back in errors for field_type "object_set",
+	// e.g. "user:<id> or group:<identifier>".
+	MemberHint string `yaml:"member_hint,omitempty"`
 	// Align controls horizontal alignment in the table renderer.
 	// Supported: "right". Empty means left (default).
 	Align string `yaml:"align,omitempty"`
@@ -332,6 +342,9 @@ func (f FieldDef) Validate() error {
 	}
 	if strings.HasPrefix(f.MutablePath, "it.") {
 		return fmt.Errorf("field %q: mutable_path must not start with \"it.\" (it is relative to the update_body_pick subtree)", f.ID)
+	}
+	if f.FieldType == "object_set" && (f.MemberExpr == "" || f.MemberIdentity == "") {
+		return fmt.Errorf("field %q: field_type object_set requires both member_expr and member_identity", f.ID)
 	}
 	return nil
 }

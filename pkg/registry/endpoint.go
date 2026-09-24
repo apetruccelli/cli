@@ -788,7 +788,7 @@ func runGetThenUpdate(ctx *cmdctx.Ctx, ep *spec.EndpointSpec, c *client.Client, 
 		fieldPaths[f.ID] = f
 	}
 
-	if err := applyMutations(mutable, ctx.SetArgs, ctx.DelArgs, fieldPaths); err != nil {
+	if err := applyMutations(ctx, mutable, ctx.SetArgs, ctx.DelArgs, fieldPaths); err != nil {
 		return nil, err
 	}
 
@@ -901,7 +901,7 @@ func runSetFields(ctx *cmdctx.Ctx, ep *spec.EndpointSpec, c *client.Client, path
 		fieldPaths[f.ID] = f
 	}
 
-	if err := applyMutations(mutable, ctx.SetArgs, ctx.DelArgs, fieldPaths); err != nil {
+	if err := applyMutations(ctx, mutable, ctx.SetArgs, ctx.DelArgs, fieldPaths); err != nil {
 		return nil, err
 	}
 
@@ -915,14 +915,31 @@ func runSetFields(ctx *cmdctx.Ctx, ep *spec.EndpointSpec, c *client.Client, path
 }
 
 // applyMutations applies --set and --del operations to mutable in-place.
-// applyMutations applies --set and --del operations to mutable in-place.
 // fieldPaths maps field IDs to their FieldDef; fd.MutablePath is the dot-path
 // within mutable (relative to the update_body_pick subtree, no "it." prefix).
-func applyMutations(mutable map[string]any, setArgs map[string]string, delArgs []string, fieldPaths map[string]spec.FieldDef) error {
+//
+// ctx is only used to build the expr-lang environment that field_type "object_set"
+// evaluates its member_expr/member_identity in, so it may be nil for specs that
+// declare no object_set field.
+func applyMutations(ctx *cmdctx.Ctx, mutable map[string]any, setArgs map[string]string, delArgs []string, fieldPaths map[string]spec.FieldDef) error {
 	// Build a map from user-facing field ID to its mutable_path within mutable.
 	idToRel := map[string]string{}
 	for id, fd := range fieldPaths {
 		idToRel[id] = fd.MutablePath
+	}
+
+	// Built on first use: object_set is the only field type that evaluates expressions,
+	// and most commands declare none.
+	var exprEnv map[string]any
+	envFor := func() map[string]any {
+		if exprEnv == nil {
+			if ctx == nil {
+				exprEnv = map[string]any{}
+			} else {
+				exprEnv = exprenv.Make(ctx)
+			}
+		}
+		return exprEnv
 	}
 
 	for key, val := range setArgs {
@@ -960,27 +977,17 @@ func applyMutations(mutable map[string]any, setArgs map[string]string, delArgs [
 				arr = append(arr, member)
 			}
 			setDotPath(mutable, rel, arr)
-		case "name_ref_set":
+		case "object_set":
 			if len(parts) < 2 {
-				return fmt.Errorf("--set %s: name-ref fields require a member (e.g. --set tags.backend)", key)
+				return fmt.Errorf("--set %s: %s requires a member (e.g. --set %s.%s)", key, fieldID, fieldID, memberHint(fd))
 			}
-			member := parts[1]
-			arr := getDotPathSlice(mutable, rel)
-			if !nameRefContains(arr, member) {
-				arr = append(arr, map[string]any{"name": member})
-			}
-			setDotPath(mutable, rel, arr)
-		case "owner_ref_set":
-			if len(parts) < 2 {
-				return fmt.Errorf("--set %s: owner-ref fields require a member (e.g. --set owners.user:<user-id> or --set owners.group:platform-team)", key)
-			}
-			ownerRef, err := parseOwnerRef(parts[1])
+			obj, identity, err := objectSetMember(envFor(), fd, parts[1])
 			if err != nil {
 				return fmt.Errorf("--set %s: %w", key, err)
 			}
 			arr := getDotPathSlice(mutable, rel)
-			if !ownerRefContains(arr, ownerRef) {
-				arr = append(arr, ownerRef)
+			if !objectSetContains(envFor(), fd, arr, identity) {
+				arr = append(arr, obj)
 			}
 			setDotPath(mutable, rel, arr)
 		default: // scalar
@@ -1016,23 +1023,16 @@ func applyMutations(mutable map[string]any, setArgs map[string]string, delArgs [
 			member := parts[1]
 			arr := getDotPathSlice(mutable, rel)
 			setDotPath(mutable, rel, sliceRemove(arr, member))
-		case "name_ref_set":
+		case "object_set":
 			if len(parts) < 2 {
-				return fmt.Errorf("--del %s: name-ref fields require a member (e.g. --del tags.backend)", key)
+				return fmt.Errorf("--del %s: %s requires a member (e.g. --del %s.%s)", key, fieldID, fieldID, memberHint(fd))
 			}
-			member := parts[1]
-			arr := getDotPathSlice(mutable, rel)
-			setDotPath(mutable, rel, nameRefRemove(arr, member))
-		case "owner_ref_set":
-			if len(parts) < 2 {
-				return fmt.Errorf("--del %s: owner-ref fields require a member (e.g. --del owners.user:<user-id>)", key)
-			}
-			ownerRef, err := parseOwnerRef(parts[1])
+			_, identity, err := objectSetMember(envFor(), fd, parts[1])
 			if err != nil {
 				return fmt.Errorf("--del %s: %w", key, err)
 			}
 			arr := getDotPathSlice(mutable, rel)
-			setDotPath(mutable, rel, ownerRefRemove(arr, ownerRef))
+			setDotPath(mutable, rel, objectSetRemove(envFor(), fd, arr, identity))
 		default: // scalar
 			setDotPath(mutable, rel, nil)
 		}
@@ -1119,71 +1119,54 @@ func sliceRemove(s []any, v string) []any {
 
 // nameRefContains reports whether s contains an object with "name" == v,
 // e.g. {"name": "backend"} as used by FME tag references.
-func nameRefContains(s []any, v string) bool {
-	for _, el := range s {
-		if m, ok := el.(map[string]any); ok && fmt.Sprint(m["name"]) == v {
-			return true
-		}
+// memberHint renders the member syntax for a field_type "object_set" field, for use
+// in error messages. Falls back to a generic placeholder when the spec omits one.
+func memberHint(fd spec.FieldDef) string {
+	if fd.MemberHint != "" {
+		return fd.MemberHint
 	}
-	return false
+	return "<member>"
 }
 
-func nameRefRemove(s []any, v string) []any {
-	out := make([]any, 0, len(s))
-	for _, el := range s {
-		if m, ok := el.(map[string]any); ok && fmt.Sprint(m["name"]) == v {
-			continue
-		}
-		out = append(out, el)
-	}
-	return out
-}
-
-// parseOwnerRef parses a "user:<id>" or "group:<identifier>" member string
-// into an FME OwnerReferenceInput object.
+// objectSetMember evaluates a field's member_expr to build the object that the member
+// string the user typed stands for, plus that object's identity for comparison.
 //
-// Users are addressed by ID rather than email because owners come back from the
-// API with an id but no email, and a member has to be comparable against what
-// was read in order for --del to match and for --set to stay idempotent. Use
-// "harness list user" to look an ID up.
-func parseOwnerRef(member string) (map[string]any, error) {
-	parts := strings.SplitN(member, ":", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf(`owner ref must be "user:<id>" or "group:<identifier>" (got %q)`, member)
+// An empty identity means the member could not be turned into something addressable
+// (member_expr rejected it by returning nil, or the object it built carries none of
+// the keys member_identity reads), so it is reported back as a malformed member.
+func objectSetMember(env map[string]any, fd spec.FieldDef, member string) (any, string, error) {
+	env["member"] = member
+	obj, ok := exprenv.EvalExprAny(env, fd.MemberExpr)
+	if !ok {
+		return nil, "", fmt.Errorf("%q is not a valid %s member (expected %s)", member, fd.ID, memberHint(fd))
 	}
-	switch strings.ToLower(parts[0]) {
-	case "user":
-		return map[string]any{"type": "USER", "id": parts[1]}, nil
-	case "group":
-		return map[string]any{"type": "GROUP", "identifier": parts[1]}, nil
-	default:
-		return nil, fmt.Errorf(`owner ref must be prefixed with "user:" or "group:" (got %q)`, parts[0])
+	identity := objectSetIdentity(env, fd, obj)
+	if identity == "" {
+		return nil, "", fmt.Errorf("%q is not a valid %s member (expected %s)", member, fd.ID, memberHint(fd))
 	}
+	return obj, identity, nil
 }
 
-func ownerRefEqual(a, b map[string]any) bool {
-	if fmt.Sprint(a["type"]) != fmt.Sprint(b["type"]) {
-		return false
-	}
-	if strings.EqualFold(fmt.Sprint(a["type"]), "USER") {
-		return fmt.Sprint(a["id"]) == fmt.Sprint(b["id"])
-	}
-	return fmt.Sprint(a["identifier"]) == fmt.Sprint(b["identifier"])
+// objectSetIdentity projects one array element to the string identifying it. Elements
+// the expression cannot read return "", which never matches a real member.
+func objectSetIdentity(env map[string]any, fd spec.FieldDef, el any) string {
+	env["el"] = el
+	return exprenv.EvalExpr(env, fd.MemberIdentity)
 }
 
-func ownerRefContains(s []any, o map[string]any) bool {
+func objectSetContains(env map[string]any, fd spec.FieldDef, s []any, identity string) bool {
 	for _, el := range s {
-		if m, ok := el.(map[string]any); ok && ownerRefEqual(m, o) {
+		if objectSetIdentity(env, fd, el) == identity {
 			return true
 		}
 	}
 	return false
 }
 
-func ownerRefRemove(s []any, o map[string]any) []any {
+func objectSetRemove(env map[string]any, fd spec.FieldDef, s []any, identity string) []any {
 	out := make([]any, 0, len(s))
 	for _, el := range s {
-		if m, ok := el.(map[string]any); ok && ownerRefEqual(m, o) {
+		if objectSetIdentity(env, fd, el) == identity {
 			continue
 		}
 		out = append(out, el)
