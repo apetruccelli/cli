@@ -222,7 +222,6 @@ commands:
       # written as {type, id} / {type, identifier}. Echoing a read shape back is a 400.
       update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.id}))}'
       update_body_wrap: ""
-      refetch_after_write: true
       query_params:
         account_id: auth.account
         organization_identifier: auth.org

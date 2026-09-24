@@ -804,28 +804,7 @@ func runGetThenUpdate(ctx *cmdctx.Ctx, ep *spec.EndpointSpec, c *client.Client, 
 		Body:            updateBody,
 		BodyContentType: resolveContentType(ep, method),
 	})
-	if err != nil || !ep.RefetchAfterWrite {
-		return result, err
-	}
-
-	// Some APIs return a partial/stale entity in the write response (e.g. omitting
-	// arrays like owners/tags that a fresh GET reflects correctly). Re-fetch and
-	// splice the fresh entity into the same spot item_expr expects it.
-	freshResult, _, gerr := c.Get(getPath, getQP)
-	if gerr != nil {
-		return result, nil
-	}
-	if ep.ItemExpr == "" || ep.ItemExpr == "it" {
-		return freshResult, nil
-	}
-	if rel, ok := strings.CutPrefix(ep.ItemExpr, "it."); ok {
-		if m, ok := result.(map[string]any); ok {
-			setDotPath(m, rel, freshResult)
-			return m, nil
-		}
-		return map[string]any{rel: freshResult}, nil
-	}
-	return result, nil
+	return result, err
 }
 
 // runGetThenPutKV implements the "get-then-put-kv" update strategy for APIs

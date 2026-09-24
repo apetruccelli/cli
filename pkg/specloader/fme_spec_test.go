@@ -542,8 +542,7 @@ func TestFMESpec_UpdateFeatureFlag(t *testing.T) {
 
 	getResp := `{"name":"my-flag","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE","rolloutStatus":{"name":"Ramp"},"createdAt":"2026-01-01T00:00:00Z"}`
 	patchResp := `{"entity":{"name":"my-flag","description":"new desc"}}`
-	refetchResp := `{"name":"my-flag","description":"new desc","trafficType":{"name":"user"},"status":"ACTIVE","rolloutStatus":{"name":"Ramp"},"createdAt":"2026-01-01T00:00:00Z"}`
-	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp, refetchResp})
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp})
 
 	ctx := fmeTestCtx(t, srv.URL)
 	ctx.Id = "my-flag"
@@ -556,8 +555,8 @@ func TestFMESpec_UpdateFeatureFlag(t *testing.T) {
 		t.Fatalf("RunEndpoint: %v", err)
 	}
 
-	if len(*caps) != 3 {
-		t.Fatalf("got %d requests, want 3 (GET, PATCH, refetch GET)", len(*caps))
+	if len(*caps) != 2 {
+		t.Fatalf("got %d requests, want 2 (GET, PATCH)", len(*caps))
 	}
 	patch := (*caps)[1]
 	if patch.method != "PATCH" {
@@ -601,8 +600,7 @@ func TestFMESpec_UpdateFeatureFlag_TagsOwnersCarryOver(t *testing.T) {
 		`"tags":[{"id":"t1","name":"alpha"},{"id":"t2","name":"beta"}],` +
 		`"owners":[{"id":"u1","name":"alice","type":"USER"},{"id":"g1","name":"platform","type":"GROUP"}]}`
 	patchResp := `{"entity":{"name":"my-flag"}}`
-	refetchResp := `{"name":"my-flag","description":"old desc"}`
-	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp, refetchResp})
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp})
 
 	ctx := fmeTestCtx(t, srv.URL)
 	ctx.Id = "my-flag"
@@ -654,7 +652,7 @@ func TestFMESpec_UpdateFeatureFlag_DelOwnerByID(t *testing.T) {
 	}
 
 	getResp := `{"name":"my-flag","owners":[{"id":"u1","name":"alice","type":"USER"},{"id":"u2","name":"bob","type":"USER"}]}`
-	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"my-flag"}}`, `{"name":"my-flag"}`})
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"my-flag"}}`})
 
 	ctx := fmeTestCtx(t, srv.URL)
 	ctx.Id = "my-flag"
@@ -696,8 +694,7 @@ func TestFMESpec_UpdateFeatureFlag_RolloutStatus(t *testing.T) {
 
 	getResp := `{"name":"my-flag","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE","rolloutStatus":{"id":"rs-1","name":"Ramp"},"createdAt":"2026-01-01T00:00:00Z"}`
 	patchResp := `{"entity":{"name":"my-flag","rolloutStatus":{"id":"rs-2","name":"Ramping"}}}`
-	refetchResp := `{"name":"my-flag","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE","rolloutStatus":{"id":"rs-2","name":"Ramping"},"createdAt":"2026-01-01T00:00:00Z"}`
-	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp, refetchResp})
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp})
 
 	ctx := fmeTestCtx(t, srv.URL)
 	ctx.Id = "my-flag"

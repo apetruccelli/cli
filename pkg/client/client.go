@@ -51,29 +51,12 @@ func APIErrorMessage(status int, body []byte) string {
 			return "Harness returned an HTML page (possible redirect, proxy, or WAF). Check your API URL and credentials."
 		}
 	}
-	// Try to extract a message from JSON — supports two known envelope shapes:
-	//   {"message": "..."}                                    (most v1/v2 APIs)
-	//   {"errorType": "...", "detail": "...", "field": "..."} (FME v4 API)
+	// Try to extract a message from JSON
 	var parsed struct {
-		Message   string `json:"message"`
-		ErrorType string `json:"errorType"`
-		Detail    string `json:"detail"`
-		Field     string `json:"field"`
+		Message string `json:"message"`
 	}
-	if json.Unmarshal(body, &parsed) == nil {
-		if parsed.Message != "" {
-			return parsed.Message
-		}
-		if parsed.Detail != "" {
-			msg := parsed.Detail
-			if parsed.ErrorType != "" {
-				msg = parsed.ErrorType + ": " + msg
-			}
-			if parsed.Field != "" {
-				msg += " (field: " + parsed.Field + ")"
-			}
-			return msg
-		}
+	if json.Unmarshal(body, &parsed) == nil && parsed.Message != "" {
+		return parsed.Message
 	}
 	if len(body) > 200 {
 		return string(body[:200]) + "..."
@@ -208,7 +191,6 @@ func (c *Client) DoRequest(r Request) (any, http.Header, error) {
 		return nil, nil, fmt.Errorf("reading API response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		hlog.Debug(r.Method+" "+u.Path, "resp_body", string(respBody))
 		return nil, resp.Header, fmt.Errorf("API error %d: %s", resp.StatusCode, APIErrorMessage(resp.StatusCode, respBody))
 	}
 	if len(respBody) == 0 {

@@ -546,11 +546,6 @@ type EndpointSpec struct {
 	// GetQueryParams overrides query_params for the GET leg of get-then-put-kv.
 	// Use when the GET and PUT endpoints require different query parameters.
 	GetQueryParams map[string]string `yaml:"get_query_params,omitempty"`
-	// RefetchAfterWrite re-runs the GET leg after a successful get-then-patch (or
-	// get-then-put) write and displays that fresh response instead of the write
-	// response body. Use when the API's PATCH/PUT response omits or stales fields
-	// (e.g. arrays like owners/tags) that a subsequent GET returns correctly.
-	RefetchAfterWrite bool `yaml:"refetch_after_write,omitempty"`
 	// CreateStrategy declares how create commands build the POST body from --set args.
 	// "set-fields": seed from create_body_init, apply --set mutations, wrap under create_body_wrap, then POST.
 	// Enables --set / positional key=value args and --list-fields on create commands.
