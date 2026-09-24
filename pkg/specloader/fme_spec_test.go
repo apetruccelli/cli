@@ -6,6 +6,7 @@ package specloader
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -181,9 +182,9 @@ func TestFMESpec_ListFMEEnvironment(t *testing.T) {
 	}
 
 	body := fmeReadOut(t, ctx)
-	for _, want := range []string{"Prod", "true", "ACTIVE"} {
+	for _, want := range []string{"env-uuid-1", "Prod", "true", "ACTIVE"} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("output missing %q: %s", want, body)
+			t.Fatalf("output missing %q (id column must be present so get/update/delete are usable off list output): %s", want, body)
 		}
 	}
 }
@@ -215,6 +216,168 @@ func TestFMESpec_GetFMEEnvironment(t *testing.T) {
 
 	if *path != "/fme/api/v4/environments/env-uuid-1" {
 		t.Fatalf("request path = %q, want /fme/api/v4/environments/env-uuid-1", *path)
+	}
+}
+
+// TestFMESpec_CreateFMEEnvironment drives "create fme_environment <name> --production"
+// through the set-fields create strategy: create_body_init seeds {name, isProduction}
+// from ctx.id/--production, and item_expr unwraps the {entity, governance} envelope.
+func TestFMESpec_CreateFMEEnvironment(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "fme_environment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create fme_environment: command not found or missing endpoint spec")
+	}
+
+	var gotMethod, gotPath, gotQuery, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"entity":{"id":"env-uuid-2","name":"cli-test-env","isProduction":true,"status":"ACTIVE"},"governance":null}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "cli-test-env"
+	ctx.Noun = "fme_environment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"production": true}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/fme/api/v4/environments" {
+		t.Fatalf("request path = %q, want /fme/api/v4/environments", gotPath)
+	}
+	if !strings.Contains(gotQuery, "organization_identifier=org") || !strings.Contains(gotQuery, "project_identifier=proj") {
+		t.Fatalf("query = %q, want organization_identifier=org and project_identifier=proj", gotQuery)
+	}
+	if !strings.Contains(gotBody, `"name":"cli-test-env"`) {
+		t.Fatalf("request body missing name: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"isProduction":true`) {
+		t.Fatalf("request body missing isProduction: %s", gotBody)
+	}
+
+	out := fmeReadOut(t, ctx)
+	if !strings.Contains(out, `"id": "env-uuid-2"`) {
+		t.Fatalf("output missing entity-unwrapped id: %s", out)
+	}
+}
+
+// TestFMESpec_UpdateFMEEnvironment drives "update fme_environment --set name=..." through
+// the get-then-patch strategy and asserts the curated update_body_pick sends only
+// {name, isProduction} — not the full GET response (id/status/createdAt would break the
+// backend's Nulls.FAIL UpdateEnvironmentRequest if it ever tightened to reject unknowns).
+func TestFMESpec_UpdateFMEEnvironment(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "fme_environment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update fme_environment: command not found or missing endpoint spec")
+	}
+
+	getFixture := `{"id":"env-uuid-1","name":"Prod","isProduction":true,"status":"ACTIVE"}`
+	var gotMethod, gotPath, gotBody, gotContentType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, getFixture)
+			return
+		}
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotContentType = r.Header.Get("Content-Type")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		fmt.Fprint(w, `{"entity":`+gotBody+`}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "env-uuid-1"
+	ctx.Noun = "fme_environment"
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.SetArgs = map[string]string{"name": "Renamed"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if gotMethod != http.MethodPatch {
+		t.Fatalf("method = %q, want PATCH", gotMethod)
+	}
+	if gotPath != "/fme/api/v4/environments/env-uuid-1" {
+		t.Fatalf("request path = %q, want /fme/api/v4/environments/env-uuid-1", gotPath)
+	}
+	if gotContentType != "application/merge-patch+json" {
+		t.Fatalf("Content-Type = %q, want application/merge-patch+json", gotContentType)
+	}
+	if !strings.Contains(gotBody, `"name":"Renamed"`) {
+		t.Fatalf("PATCH body missing mutated name: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"isProduction":true`) {
+		t.Fatalf("PATCH body missing carried-over isProduction from GET: %s", gotBody)
+	}
+	if strings.Contains(gotBody, "status") || strings.Contains(gotBody, `"id"`) {
+		t.Fatalf("PATCH body should be curated to {name, isProduction} only, got: %s", gotBody)
+	}
+}
+
+// TestFMESpec_DeleteFMEEnvironment drives "delete fme_environment" and asserts the DELETE
+// request hits the {id} path. The real API returns {"governance": {...}} with no entity on
+// delete, but this command has no text_header, so no output rendering is attempted either way.
+func TestFMESpec_DeleteFMEEnvironment(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "fme_environment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete fme_environment: command not found or missing endpoint spec")
+	}
+
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"governance":{"result":"ok"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "env-uuid-1"
+	ctx.Noun = "fme_environment"
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method = %q, want DELETE", gotMethod)
+	}
+	if gotPath != "/fme/api/v4/environments/env-uuid-1" {
+		t.Fatalf("request path = %q, want /fme/api/v4/environments/env-uuid-1", gotPath)
 	}
 }
 

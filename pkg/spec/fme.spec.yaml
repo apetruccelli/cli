@@ -35,6 +35,8 @@ nouns:
     short_desc: A Harness FME environment (distinct from the CD "environment" noun).
     noun_aliases: [fme_environments, fme_env]
     fields:
+      - id: id
+        expr: it.id
       - id: name
         expr: it.name
         mutable_path: name
@@ -499,7 +501,7 @@ commands:
         page_size_max: 100
         total_expr: it.totalCount
         countable: true
-      columns: [name, production, status]
+      columns: [id, name, production, status]
 
   - command: get fme_environment
     verb: get
@@ -554,7 +556,7 @@ commands:
       path: /fme/api/v4/environments/{{ctx.id}}
       get_path: /fme/api/v4/environments/{{ctx.id}}
       update_strategy: get-then-patch
-      update_body_pick: it
+      update_body_pick: '{name: it.name, isProduction: it.isProduction}'
       update_body_wrap: ""
       query_params:
         account_id: auth.account
