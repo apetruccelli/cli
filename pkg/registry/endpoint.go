@@ -1117,8 +1117,6 @@ func sliceRemove(s []any, v string) []any {
 	return out
 }
 
-// nameRefContains reports whether s contains an object with "name" == v,
-// e.g. {"name": "backend"} as used by FME tag references.
 // memberHint renders the member syntax for a field_type "object_set" field, for use
 // in error messages. Falls back to a generic placeholder when the spec omits one.
 func memberHint(fd spec.FieldDef) string {
