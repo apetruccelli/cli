@@ -750,3 +750,50 @@ func TestFMESpec_DeleteFeatureFlag(t *testing.T) {
 		t.Fatalf("request = %s %s, want DELETE /fme/api/v4/feature-flags/my-flag", got.method, got.path)
 	}
 }
+
+// TestFMESpec_ArchiveUnarchiveFeatureFlag asserts that both --comment and --title
+// reach the archive/unarchive body. The v4 ArchiveUnarchiveRequest carries both, but
+// the spec originally wired only comment, so --title was silently unsendable.
+func TestFMESpec_ArchiveUnarchiveFeatureFlag(t *testing.T) {
+	for _, variant := range []string{"archive", "unarchive"} {
+		t.Run(variant, func(t *testing.T) {
+			reg := registry.New()
+			if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+				t.Fatalf("LoadSpec: %v", err)
+			}
+			cs := reg.GetSpec("execute", "feature_flag:"+variant)
+			if cs == nil || cs.Endpoint == nil {
+				t.Fatalf("execute feature_flag:%s: command not found or missing endpoint spec", variant)
+			}
+
+			srv, caps := fmeSequenceServer(t, []string{`{"entity":{"name":"my-flag"}}`})
+
+			ctx := fmeTestCtx(t, srv.URL)
+			ctx.Id = "my-flag"
+			ctx.Noun = "feature_flag"
+			ctx.Resolver = reg
+			ctx.FormatFlags.Format = "json"
+			ctx.FlagValues = map[string]any{"comment": "audit why", "title": "audit what"}
+
+			if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+				t.Fatalf("RunEndpoint: %v", err)
+			}
+
+			if len(*caps) != 1 {
+				t.Fatalf("got %d requests, want 1", len(*caps))
+			}
+			got := (*caps)[0]
+			wantPath := "/fme/api/v4/feature-flags/my-flag/" + variant
+			if got.method != "POST" || got.path != wantPath {
+				t.Fatalf("request = %s %s, want POST %s", got.method, got.path, wantPath)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(got.body, &body); err != nil {
+				t.Fatalf("unmarshal request body: %v", err)
+			}
+			if body["comment"] != "audit why" || body["title"] != "audit what" {
+				t.Fatalf("body = %v, want comment=%q title=%q", body, "audit why", "audit what")
+			}
+		})
+	}
+}

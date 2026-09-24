@@ -252,6 +252,8 @@ commands:
     flags:
       - name: comment
         description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: POST
       path: /fme/api/v4/feature-flags/{{ctx.id}}/archive
@@ -261,6 +263,7 @@ commands:
         project_identifier: auth.project
       body_params:
         comment: flags.comment
+        title: flags.title
       item_expr: it.entity
       text_header: "\nArchived feature flag {{ctx.id}}\n"
 
@@ -273,6 +276,8 @@ commands:
     flags:
       - name: comment
         description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: POST
       path: /fme/api/v4/feature-flags/{{ctx.id}}/unarchive
@@ -282,6 +287,7 @@ commands:
         project_identifier: auth.project
       body_params:
         comment: flags.comment
+        title: flags.title
       item_expr: it.entity
       text_header: "\nUnarchived feature flag {{ctx.id}}\n"
 
