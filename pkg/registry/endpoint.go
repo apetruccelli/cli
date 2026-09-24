@@ -993,7 +993,7 @@ func applyMutations(mutable map[string]any, setArgs map[string]string, delArgs [
 			setDotPath(mutable, rel, arr)
 		case "owner_ref_set":
 			if len(parts) < 2 {
-				return fmt.Errorf("--set %s: owner-ref fields require a member (e.g. --set owners.user:alice@example.com or --set owners.group:platform-team)", key)
+				return fmt.Errorf("--set %s: owner-ref fields require a member (e.g. --set owners.user:<user-id> or --set owners.group:platform-team)", key)
 			}
 			ownerRef, err := parseOwnerRef(parts[1])
 			if err != nil {
@@ -1046,7 +1046,7 @@ func applyMutations(mutable map[string]any, setArgs map[string]string, delArgs [
 			setDotPath(mutable, rel, nameRefRemove(arr, member))
 		case "owner_ref_set":
 			if len(parts) < 2 {
-				return fmt.Errorf("--del %s: owner-ref fields require a member (e.g. --del owners.user:alice@example.com)", key)
+				return fmt.Errorf("--del %s: owner-ref fields require a member (e.g. --del owners.user:<user-id>)", key)
 			}
 			ownerRef, err := parseOwnerRef(parts[1])
 			if err != nil {
@@ -1160,16 +1160,21 @@ func nameRefRemove(s []any, v string) []any {
 	return out
 }
 
-// parseOwnerRef parses a "user:<email>" or "group:<identifier>" member string
+// parseOwnerRef parses a "user:<id>" or "group:<identifier>" member string
 // into an FME OwnerReferenceInput object.
+//
+// Users are addressed by ID rather than email because owners come back from the
+// API with an id but no email, and a member has to be comparable against what
+// was read in order for --del to match and for --set to stay idempotent. Use
+// "harness list user" to look an ID up.
 func parseOwnerRef(member string) (map[string]any, error) {
 	parts := strings.SplitN(member, ":", 2)
 	if len(parts) != 2 {
-		return nil, fmt.Errorf(`owner ref must be "user:<email>" or "group:<identifier>" (got %q)`, member)
+		return nil, fmt.Errorf(`owner ref must be "user:<id>" or "group:<identifier>" (got %q)`, member)
 	}
 	switch strings.ToLower(parts[0]) {
 	case "user":
-		return map[string]any{"type": "USER", "email": parts[1]}, nil
+		return map[string]any{"type": "USER", "id": parts[1]}, nil
 	case "group":
 		return map[string]any{"type": "GROUP", "identifier": parts[1]}, nil
 	default:
@@ -1182,7 +1187,7 @@ func ownerRefEqual(a, b map[string]any) bool {
 		return false
 	}
 	if strings.EqualFold(fmt.Sprint(a["type"]), "USER") {
-		return fmt.Sprint(a["email"]) == fmt.Sprint(b["email"])
+		return fmt.Sprint(a["id"]) == fmt.Sprint(b["id"])
 	}
 	return fmt.Sprint(a["identifier"]) == fmt.Sprint(b["identifier"])
 }

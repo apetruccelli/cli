@@ -308,8 +308,14 @@ type FieldDef struct {
 	// Supported: "multiline_text" (renders raw block below other fields), "yaml" (alias for multiline_text, use for actual YAML content),
 	// "tags" (tag-map handling), "set" (string-set handling), "ts" (epoch-ms timestamp),
 	// "name_ref_set" (--set field.member adds {"name": member} to the array, e.g. FME tags),
-	// "owner_ref_set" (--set field.user:<email> or field.group:<identifier> adds an FME
-	// OwnerReferenceInput {"type": "USER"|"GROUP", "email"|"identifier": ...} to the array).
+	// "owner_ref_set" (--set field.user:<id> or field.group:<identifier> adds an FME
+	// OwnerReferenceInput {"type": "USER", "id": ...} or {"type": "GROUP", "identifier": ...}
+	// to the array; users are addressed by ID because the read shape carries no email).
+	//
+	// The collection types ("tags", "set", "name_ref_set", "owner_ref_set") mutate the
+	// subtree that update_body_pick selected, so the pick MUST include the field or the
+	// mutation starts from an empty array and merge-patch replaces the whole collection.
+	// Scalars are safe to omit from the pick, since --set creates the path.
 	FieldType string `yaml:"field_type,omitempty"`
 	// Align controls horizontal alignment in the table renderer.
 	// Supported: "right". Empty means left (default).

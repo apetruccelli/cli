@@ -215,7 +215,12 @@ commands:
       path: /fme/api/v4/feature-flags/{{ctx.id}}
       get_path: /fme/api/v4/feature-flags/{{ctx.id}}
       update_strategy: get-then-patch
-      update_body_pick: "{description: it.description}"
+      # tags/owners must be carried over so --set/--del can add to or remove from the
+      # existing members instead of replacing the whole array. They are reshaped on the
+      # way out because v4 accepts a narrower shape than it returns: tags are read as
+      # {id, name} but written as {name}, and owners are read as {id, name, type} but
+      # written as {type, id} / {type, identifier}. Echoing a read shape back is a 400.
+      update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.id}))}'
       update_body_wrap: ""
       refetch_after_write: true
       query_params:
