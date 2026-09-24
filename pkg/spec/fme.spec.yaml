@@ -1014,7 +1014,9 @@ commands:
         keys: 'flags["key"]'
         comment: 'flags.comment != "" ? flags.comment : nil'
         title: 'flags.title != "" ? flags.title : nil'
-      item_expr: it
+      # The response echoes the submitted keys plus a governance result, not a segment, so
+      # there is no entity to render fields from.
+      no_fields: true
       text_header: "\nAdded {{len(flags[\"key\"])}} key(s) to {{ctx.id}} in {{flags.env}}\n"
 
   - command: execute segment:remove-keys
@@ -1049,7 +1051,8 @@ commands:
         keys: 'flags["key"]'
         comment: 'flags.comment != "" ? flags.comment : nil'
         title: 'flags.title != "" ? flags.title : nil'
-      item_expr: it
+      # Same echo-plus-governance response shape as add-keys: nothing to render as fields.
+      no_fields: true
       text_header: "\nRemoved {{len(flags[\"key\"])}} key(s) from {{ctx.id}} in {{flags.env}}\n"
 
   # ── traffic_type ──────────────────────────────────────────────────────────────

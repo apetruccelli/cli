@@ -853,6 +853,53 @@ func TestFMESpec_AddSegmentKeys(t *testing.T) {
 	}
 }
 
+// TestFMESpec_SegmentKeysMutation_NoFields asserts the key mutations print only their
+// header in text mode. The response is the submitted keys plus a governance result, not a
+// segment, so rendering the segment noun's fields against it yields a block of blank
+// labels ("Name:", "Traffic Type:", ...) — which is what happened before no_fields.
+func TestFMESpec_SegmentKeysMutation_NoFields(t *testing.T) {
+	for _, variant := range []string{"segment:add-keys", "segment:remove-keys"} {
+		t.Run(variant, func(t *testing.T) {
+			reg := registry.New()
+			if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+				t.Fatalf("LoadSpec: %v", err)
+			}
+			cs := reg.GetSpec("execute", variant)
+			if cs == nil || cs.Endpoint == nil {
+				t.Fatalf("execute %s: command not found or missing endpoint spec", variant)
+			}
+			if !cs.Endpoint.NoFields {
+				t.Fatalf("execute %s: no_fields is not set, so the segment fields render empty", variant)
+			}
+
+			srv, _ := fmeSequenceServer(t, []string{`{"keys":["user-1"]}`})
+
+			ctx := fmeTestCtx(t, srv.URL)
+			ctx.Id = "my-segment"
+			ctx.Noun = "segment"
+			ctx.Resolver = reg
+			ctx.FlagValues = map[string]any{
+				"env": "env-uuid-1",
+				"key": []string{"user-1"},
+			}
+
+			if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+				t.Fatalf("RunEndpoint: %v", err)
+			}
+
+			out := fmeReadOut(t, ctx)
+			for _, label := range []string{"Name:", "Traffic Type:", "Segment Type:", "Status:", "Tags:", "Owners:"} {
+				if strings.Contains(out, label) {
+					t.Fatalf("output renders empty segment field %q:\n%s", label, out)
+				}
+			}
+			if !strings.Contains(out, "my-segment") {
+				t.Fatalf("output does not name the segment:\n%s", out)
+			}
+		})
+	}
+}
+
 // TestFMESpec_RemoveSegmentKeys asserts removal goes to .../keys/remove as a POST with the
 // keys in the body — v4 does not expose a DELETE for this, because DELETE with a request
 // body is unreliable across HTTP clients.
