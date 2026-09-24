@@ -27,6 +27,30 @@ nouns:
       - id: rollout_status
         label: Rollout Status
         expr: it.rolloutStatus.name ?? ""
+        mutable_path: rolloutStatus.id
+      - id: tags
+        expr: join(map(it.tags, {#.name}), ", ")
+        mutable_path: tags
+        # v4 reads tags as {id, name} but writes them as {name}, so a member is just its
+        # name, and update_body_pick reshapes what was read into what can be written.
+        field_type: object_set
+        member_expr: "{name: member}"
+        member_identity: el.name
+        member_hint: <tag-name>
+      - id: owners
+        expr: join(map(it.owners, {#.name}), ", ")
+        mutable_path: owners
+        # Users are addressed by id, not email: v4 returns owners with an id and no email,
+        # and a member has to be comparable against what was read for --del to match and
+        # --set to stay idempotent. Use "harness list user" to look an id up. Groups are
+        # written under "identifier" where users use "id".
+        field_type: object_set
+        member_expr: >-
+          lower(split(member, ":")[0]) == "user" ? {type: "USER", id: member[5:]} :
+          lower(split(member, ":")[0]) == "group" ? {type: "GROUP", identifier: member[6:]} :
+          nil
+        member_identity: 'el.type == "USER" ? "user:" + el.id : "group:" + el.identifier'
+        member_hint: user:<id> or group:<identifier>
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -149,7 +173,7 @@ commands:
         organization_identifier: auth.org
         project_identifier: auth.project
         name: flags.search
-        rollout_statuses: flags.status
+        status: flags.status
       paging:
         paging_strategy: offset_limit
         page_index_param: offset
@@ -213,7 +237,12 @@ commands:
       path: /fme/api/v4/feature-flags/{{ctx.id}}
       get_path: /fme/api/v4/feature-flags/{{ctx.id}}
       update_strategy: get-then-patch
-      update_body_pick: it
+      # tags/owners must be carried over so --set/--del can add to or remove from the
+      # existing members instead of replacing the whole array. They are reshaped on the
+      # way out because v4 accepts a narrower shape than it returns: tags are read as
+      # {id, name} but written as {name}, and owners are read as {id, name, type} but
+      # written as {type, id} / {type, identifier}. Echoing a read shape back is a 400.
+      update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.id}))}'
       update_body_wrap: ""
       query_params:
         account_id: auth.account
@@ -245,6 +274,8 @@ commands:
     flags:
       - name: comment
         description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: POST
       path: /fme/api/v4/feature-flags/{{ctx.id}}/archive
@@ -254,6 +285,7 @@ commands:
         project_identifier: auth.project
       body_params:
         comment: flags.comment
+        title: flags.title
       item_expr: it.entity
       text_header: "\nArchived feature flag {{ctx.id}}\n"
 
@@ -266,6 +298,8 @@ commands:
     flags:
       - name: comment
         description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: POST
       path: /fme/api/v4/feature-flags/{{ctx.id}}/unarchive
@@ -275,6 +309,7 @@ commands:
         project_identifier: auth.project
       body_params:
         comment: flags.comment
+        title: flags.title
       item_expr: it.entity
       text_header: "\nUnarchived feature flag {{ctx.id}}\n"
 
