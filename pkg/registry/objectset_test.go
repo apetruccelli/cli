@@ -229,3 +229,102 @@ func TestFieldDefValidateObjectSet(t *testing.T) {
 		})
 	}
 }
+
+// TestApplyMutationsSeedsCollection covers mutable_seed_expr: a collection left out of
+// update_body_pick is seeded from the GET response, but only when a mutation names it and
+// only when the picked body says nothing about it. That is what lets a pick stay minimal —
+// an update that touches nothing else sends no collection at all.
+func TestApplyMutationsSeedsCollection(t *testing.T) {
+	// The write shape is narrower than the read shape, which is the whole reason the seed is
+	// an expression and not a copy of the GET subtree.
+	seededOwners := fmeOwners
+	seededOwners.MutablePath = "owners"
+	seededOwners.MutableSeedExpr = `it.owners == nil ? [] : map(it.owners, ({type: "USER", id: #.id}))`
+	seededTags := fmeTags
+	seededTags.MutablePath = "tags"
+	seededTags.MutableSeedExpr = `it.tags == nil ? [] : map(it.tags, ({name: #.name}))`
+
+	getResult := map[string]any{
+		"description": "current",
+		"owners":      []any{map[string]any{"id": "u1", "type": "USER", "name": "Ann", "email": "ann@x.io"}},
+		"tags":        []any{map[string]any{"id": "t1", "name": "alpha"}},
+	}
+	fields := map[string]spec.FieldDef{
+		"owners": seededOwners,
+		"tags":   seededTags,
+		// A scalar alongside them: --set creates its path, so it never seeds.
+		"description": {ID: "description", MutablePath: "description"},
+	}
+
+	tests := []struct {
+		name     string
+		mutable  map[string]any
+		setArgs  map[string]string
+		delArgs  []string
+		seedRoot any
+		want     map[string]any
+	}{
+		{
+			name:     "no mutation of the field leaves it out entirely",
+			mutable:  map[string]any{"description": "new"},
+			setArgs:  map[string]string{"description": "new"},
+			seedRoot: getResult,
+			want:     map[string]any{"description": "new"},
+		},
+		{
+			name:     "--set seeds the current members then appends",
+			mutable:  map[string]any{},
+			setArgs:  map[string]string{"owners.user:u2": ""},
+			seedRoot: getResult,
+			want: map[string]any{"owners": []any{
+				map[string]any{"type": "USER", "id": "u1"},
+				map[string]any{"type": "USER", "id": "u2"},
+			}},
+		},
+		{
+			name:     "--del seeds so the removal has something to remove from",
+			mutable:  map[string]any{},
+			delArgs:  []string{"owners.user:u1"},
+			seedRoot: getResult,
+			want:     map[string]any{"owners": []any{}},
+		},
+		{
+			// A pick that already selected the field wins: seeding an explicit empty
+			// collection would resurrect members the pick deliberately dropped.
+			name:     "a value already in the picked body is not overwritten",
+			mutable:  map[string]any{"owners": []any{}},
+			setArgs:  map[string]string{"owners.user:u2": ""},
+			seedRoot: getResult,
+			want:     map[string]any{"owners": []any{map[string]any{"type": "USER", "id": "u2"}}},
+		},
+		{
+			// create has no GET to seed from, so the collection correctly starts empty.
+			name:     "nil seedRoot starts from empty",
+			mutable:  map[string]any{},
+			setArgs:  map[string]string{"owners.user:u2": ""},
+			seedRoot: nil,
+			want:     map[string]any{"owners": []any{map[string]any{"type": "USER", "id": "u2"}}},
+		},
+		{
+			name:     "seeding is per field, not all collections at once",
+			mutable:  map[string]any{},
+			setArgs:  map[string]string{"tags.beta": ""},
+			seedRoot: getResult,
+			want: map[string]any{"tags": []any{
+				map[string]any{"name": "alpha"},
+				map[string]any{"name": "beta"},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := applyMutations(nil, tt.mutable, tt.setArgs, tt.delArgs, fields, tt.seedRoot); err != nil {
+				t.Fatalf("applyMutations: %v", err)
+			}
+			if !reflect.DeepEqual(tt.mutable, tt.want) {
+				t.Errorf("body = %#v, want %#v", tt.mutable, tt.want)
+			}
+		})
+	}
+}
