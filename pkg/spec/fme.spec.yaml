@@ -145,6 +145,12 @@ nouns:
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
 
+  - noun: segment_key
+    short_desc: One membership key of a segment definition (used for field lookup only).
+    fields:
+      - id: key
+        expr: it.key
+
   - noun: traffic_type
     short_desc: Harness FME traffic type (read-only lookup).
     fields:
@@ -969,6 +975,120 @@ commands:
         organization_identifier: auth.org
         project_identifier: auth.project
         environment_id: flags.env
+
+  # ── segment:definition:keys ───────────────────────────────────────────────────
+  # Membership keys live on the definition, not the segment, so every keys command is
+  # scoped to one environment with --env.
+
+  - command: list segment:definition:keys
+    verb: list
+    noun: segment
+    noun_variant: definition:keys
+    short: "List the membership keys of a segment definition: harness list segment:definition:keys <segment-name> --env <env-id>"
+    handler_type: endpoint
+    requires_parentid: true
+    parentid_label: "<segment-name>"
+    fields_noun: segment_key
+    flags:
+      - name: env
+        description: Environment identifier (required)
+        required: true
+    endpoint:
+      path: /fme/api/v4/segment-definitions/{{ctx.parentId}}/keys
+      # The endpoint returns bare strings; wrap each one so it has a named field to render.
+      items_expr: 'map(it.data, ({key: #}))'
+      item_item_expr: it
+      get_id_expr: it.key
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+        environment_id: flags.env
+      paging:
+        paging_strategy: offset_limit
+        page_index_param: offset
+        page_size_param: limit
+        page_size_default: 100
+        page_size_max: 100
+        total_expr: it.totalCount
+        countable: true
+      columns: [key]
+
+  - command: execute segment:definition:add-keys
+    verb: execute
+    noun: segment
+    noun_variant: definition:add-keys
+    short: "Add membership keys to a segment definition: harness execute segment:definition:add-keys <segment-name> --env <env-id> --key user-1 --key user-2"
+    handler_type: endpoint
+    flags:
+      - name: env
+        description: Environment identifier (required)
+        required: true
+      - name: key
+        description: "Membership key to add (repeatable, up to 10000: --key user-1 --key user-2)"
+        is_multi: true
+        required: true
+      - name: replace
+        description: Replace the whole membership with the given keys instead of adding to it
+        is_bool: true
+      - name: comment
+        description: Audit comment
+      - name: title
+        description: Audit title
+    endpoint:
+      method: POST
+      path: /fme/api/v4/segment-definitions/{{ctx.id}}/keys
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+        environment_id: flags.env
+        # Only sent when asked for: the endpoint already defaults to replace=false.
+        replace: 'flags.replace ? "true" : ""'
+      body_params:
+        keys: 'flags["key"]'
+        comment: 'flags.comment != "" ? flags.comment : nil'
+        title: 'flags.title != "" ? flags.title : nil'
+      # The response echoes the submitted keys plus a governance result, not a segment, so
+      # there is no entity to render fields from.
+      no_fields: true
+      text_header: "\nAdded {{len(flags[\"key\"])}} key(s) to {{ctx.id}} in {{flags.env}}\n"
+
+  - command: execute segment:definition:remove-keys
+    verb: execute
+    noun: segment
+    noun_variant: definition:remove-keys
+    # POST, not DELETE: the keys to remove travel in a body, and DELETE with a body is
+    # unreliable across HTTP clients, so v4 exposes this as .../keys/remove.
+    short: "Remove membership keys from a segment definition: harness execute segment:definition:remove-keys <segment-name> --env <env-id> --key user-1"
+    handler_type: endpoint
+    flags:
+      - name: env
+        description: Environment identifier (required)
+        required: true
+      - name: key
+        description: "Membership key to remove (repeatable, at least one: --key user-1 --key user-2)"
+        is_multi: true
+        required: true
+      - name: comment
+        description: Audit comment
+      - name: title
+        description: Audit title
+    endpoint:
+      method: POST
+      path: /fme/api/v4/segment-definitions/{{ctx.id}}/keys/remove
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+        environment_id: flags.env
+      body_params:
+        keys: 'flags["key"]'
+        comment: 'flags.comment != "" ? flags.comment : nil'
+        title: 'flags.title != "" ? flags.title : nil'
+      # Same echo-plus-governance response shape as add-keys: nothing to render as fields.
+      no_fields: true
+      text_header: "\nRemoved {{len(flags[\"key\"])}} key(s) from {{ctx.id}} in {{flags.env}}\n"
 
   # ── traffic_type ──────────────────────────────────────────────────────────────
 

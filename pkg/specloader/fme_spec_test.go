@@ -736,6 +736,211 @@ func TestFMESpec_DeleteSegmentDefinition(t *testing.T) {
 	}
 }
 
+// TestFMESpec_ListSegmentKeys drives "list segment:definition:keys <name> --env <env>". The
+// endpoint returns bare strings in data, so items_expr wraps each into {key: ...} to give the
+// renderer a named field.
+func TestFMESpec_ListSegmentKeys(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("list", "segment:definition:keys")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("list segment:definition:keys: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"data":["user-1","user-2"],"limit":100,"offset":0,"totalCount":2}`
+	srv, path, query := fmeCaptureServerWithQuery(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Noun = "segment"
+	ctx.ParentId = "my-segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+
+	if err := registry.RunListEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunListEndpoint: %v", err)
+	}
+
+	if *path != "/fme/api/v4/segment-definitions/my-segment/keys" {
+		t.Fatalf("request path = %q, want /fme/api/v4/segment-definitions/my-segment/keys", *path)
+	}
+	if !strings.Contains(*query, "environment_id=env-uuid-1") {
+		t.Fatalf("query = %q, want environment_id=env-uuid-1", *query)
+	}
+
+	out := fmeReadOut(t, ctx)
+	for _, want := range []string{"user-1", "user-2"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q: %s", want, out)
+		}
+	}
+}
+
+// TestFMESpec_AddSegmentKeys asserts repeated --key values become the keys array and that
+// --replace is only sent when set: the endpoint defaults replace=false, and sending
+// replace=true by accident would wipe the existing membership.
+func TestFMESpec_AddSegmentKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		replace     bool
+		wantReplace bool
+	}{
+		{name: "add", replace: false, wantReplace: false},
+		{name: "replace", replace: true, wantReplace: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := registry.New()
+			if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+				t.Fatalf("LoadSpec: %v", err)
+			}
+			cs := reg.GetSpec("execute", "segment:definition:add-keys")
+			if cs == nil || cs.Endpoint == nil {
+				t.Fatal("execute segment:definition:add-keys: command not found or missing endpoint spec")
+			}
+
+			srv, caps := fmeSequenceServer(t, []string{`{"keys":["user-1","user-2"]}`})
+
+			ctx := fmeTestCtx(t, srv.URL)
+			ctx.Id = "my-segment"
+			ctx.Noun = "segment"
+			ctx.Resolver = reg
+			ctx.FormatFlags.Format = "json"
+			ctx.FlagValues = map[string]any{
+				"env":     "env-uuid-1",
+				"key":     []string{"user-1", "user-2"},
+				"replace": tc.replace,
+				"comment": "adding beta testers",
+			}
+
+			if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+				t.Fatalf("RunEndpoint: %v", err)
+			}
+
+			got := (*caps)[0]
+			if got.method != "POST" || got.path != "/fme/api/v4/segment-definitions/my-segment/keys" {
+				t.Fatalf("request = %s %s, want POST /fme/api/v4/segment-definitions/my-segment/keys", got.method, got.path)
+			}
+			if hasReplace := strings.Contains(got.rawQuery, "replace=true"); hasReplace != tc.wantReplace {
+				t.Fatalf("query = %q, replace=true present = %v, want %v", got.rawQuery, hasReplace, tc.wantReplace)
+			}
+
+			var body map[string]any
+			if err := json.Unmarshal(got.body, &body); err != nil {
+				t.Fatalf("unmarshal request body: %v", err)
+			}
+			gotKeys, err := json.Marshal(body["keys"])
+			if err != nil {
+				t.Fatalf("marshal keys: %v", err)
+			}
+			if want := `["user-1","user-2"]`; string(gotKeys) != want {
+				t.Fatalf("body keys = %s, want %s", gotKeys, want)
+			}
+			if body["comment"] != "adding beta testers" {
+				t.Fatalf("body comment = %v, want %q", body["comment"], "adding beta testers")
+			}
+			// --title was not passed, so it must be absent rather than null.
+			if _, ok := body["title"]; ok {
+				t.Fatalf("body contains title though --title was not passed: %v", body)
+			}
+		})
+	}
+}
+
+// TestFMESpec_SegmentKeysMutation_NoFields asserts the key mutations print only their
+// header in text mode. The response is the submitted keys plus a governance result, not a
+// segment, so rendering the segment noun's fields against it yields a block of blank
+// labels ("Name:", "Traffic Type:", ...) — which is what happened before no_fields.
+func TestFMESpec_SegmentKeysMutation_NoFields(t *testing.T) {
+	for _, variant := range []string{"segment:definition:add-keys", "segment:definition:remove-keys"} {
+		t.Run(variant, func(t *testing.T) {
+			reg := registry.New()
+			if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+				t.Fatalf("LoadSpec: %v", err)
+			}
+			cs := reg.GetSpec("execute", variant)
+			if cs == nil || cs.Endpoint == nil {
+				t.Fatalf("execute %s: command not found or missing endpoint spec", variant)
+			}
+			if !cs.Endpoint.NoFields {
+				t.Fatalf("execute %s: no_fields is not set, so the segment fields render empty", variant)
+			}
+
+			srv, _ := fmeSequenceServer(t, []string{`{"keys":["user-1"]}`})
+
+			ctx := fmeTestCtx(t, srv.URL)
+			ctx.Id = "my-segment"
+			ctx.Noun = "segment"
+			ctx.Resolver = reg
+			ctx.FlagValues = map[string]any{
+				"env": "env-uuid-1",
+				"key": []string{"user-1"},
+			}
+
+			if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+				t.Fatalf("RunEndpoint: %v", err)
+			}
+
+			out := fmeReadOut(t, ctx)
+			for _, label := range []string{"Name:", "Traffic Type:", "Segment Type:", "Status:", "Tags:", "Owners:"} {
+				if strings.Contains(out, label) {
+					t.Fatalf("output renders empty segment field %q:\n%s", label, out)
+				}
+			}
+			if !strings.Contains(out, "my-segment") {
+				t.Fatalf("output does not name the segment:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestFMESpec_RemoveSegmentKeys asserts removal goes to .../keys/remove as a POST with the
+// keys in the body — v4 does not expose a DELETE for this, because DELETE with a request
+// body is unreliable across HTTP clients.
+func TestFMESpec_RemoveSegmentKeys(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("execute", "segment:definition:remove-keys")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("execute segment:definition:remove-keys: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{"keys":["user-1"]}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1", "key": []string{"user-1"}}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	if got.method != "POST" || got.path != "/fme/api/v4/segment-definitions/my-segment/keys/remove" {
+		t.Fatalf("request = %s %s, want POST /fme/api/v4/segment-definitions/my-segment/keys/remove", got.method, got.path)
+	}
+	if !strings.Contains(got.rawQuery, "environment_id=env-uuid-1") {
+		t.Fatalf("query = %q, want environment_id=env-uuid-1", got.rawQuery)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	gotKeys, err := json.Marshal(body["keys"])
+	if err != nil {
+		t.Fatalf("marshal keys: %v", err)
+	}
+	if want := `["user-1"]`; string(gotKeys) != want {
+		t.Fatalf("body keys = %s, want %s", gotKeys, want)
+	}
+}
+
 // TestFMESpec_ListSegmentDefinition drives "list segment:definition" and asserts
 // the --env flag maps to the environment_id query param and fields_extra resolves
 // (segment/environment names, description, status) off the flat item.
