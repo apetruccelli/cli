@@ -47,10 +47,16 @@ nouns:
         # and a member has to be comparable against what was read for --del to match and
         # --set to stay idempotent. Use "harness list user" to look an id up.
         #
-        # Groups go under "identifier" where users use "id", but the value is the group's
-        # name, not an id: v4 resolves a group owner by matching "identifier" against the
-        # group name within the workspace, and it is the group's name that the read shape
-        # returns. Quote the member if the name contains spaces.
+        # Groups go under "identifier" where users use "id" — sending the value under "id"
+        # instead is rejected as "Invalid json structure", so "identifier" is the only key
+        # the write DTO accepts. The value is the group's name, not an id, because the
+        # resolver matches it against the FME team name in the workspace.
+        #
+        # Adding a group owner currently fails whatever is sent: v4 answers every value it
+        # itself exposes for a group — the identifier, the display name, and both at once
+        # for a group where they are the same string — with "group owner not found", so its
+        # PATCH cannot accept the group owners its own GET returns. Reading and removing one
+        # do work, which is what this member syntax is for. Quote a name containing spaces.
         field_type: object_set
         member_expr: >-
           lower(split(member, ":")[0]) == "user" ? {type: "USER", id: member[5:]} :
@@ -118,9 +124,9 @@ nouns:
       - id: owners
         expr: join(map(it.owners, {#.name}), ", ")
         mutable_path: owners
-        # Same addressing as feature_flag owners: users by id (v4 returns an id, not an
-        # email), groups by name under "identifier". Use "harness list user" to look an
-        # id up.
+        # Same addressing as feature_flag owners: users by id (v4 rejects an email), groups
+        # by name under "identifier" — including the backend's inability to add a group
+        # owner at all. Use "harness list user" to look an id up.
         field_type: object_set
         member_expr: >-
           lower(split(member, ":")[0]) == "user" ? {type: "USER", id: member[5:]} :
