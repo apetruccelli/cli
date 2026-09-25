@@ -124,9 +124,9 @@ nouns:
       - id: owners
         expr: join(map(it.owners, {#.name}), ", ")
         mutable_path: owners
-        # Same addressing as feature_flag owners: users by id (v4 rejects an email), groups
-        # by name under "identifier" — including the backend's inability to add a group
-        # owner at all. Use "harness list user" to look an id up.
+        # Same addressing as feature_flag owners: users by id (the read carries no email to
+        # compare against), groups by name under "identifier" — including the backend's
+        # inability to add a group owner at all. Use "harness list user" to look an id up.
         field_type: object_set
         member_expr: >-
           lower(split(member, ":")[0]) == "user" ? {type: "USER", id: member[5:]} :
