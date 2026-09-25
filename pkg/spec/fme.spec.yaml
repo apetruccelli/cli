@@ -42,15 +42,19 @@ nouns:
         mutable_path: owners
         # Users are addressed by id, not email: v4 returns owners with an id and no email,
         # and a member has to be comparable against what was read for --del to match and
-        # --set to stay idempotent. Use "harness list user" to look an id up. Groups are
-        # written under "identifier" where users use "id".
+        # --set to stay idempotent. Use "harness list user" to look an id up.
+        #
+        # Groups go under "identifier" where users use "id", but the value is the group's
+        # name, not an id: v4 resolves a group owner by matching "identifier" against the
+        # group name within the workspace, and it is the group's name that the read shape
+        # returns. Quote the member if the name contains spaces.
         field_type: object_set
         member_expr: >-
           lower(split(member, ":")[0]) == "user" ? {type: "USER", id: member[5:]} :
           lower(split(member, ":")[0]) == "group" ? {type: "GROUP", identifier: member[6:]} :
           nil
         member_identity: 'el.type == "USER" ? "user:" + el.id : "group:" + el.identifier'
-        member_hint: user:<id> or group:<identifier>
+        member_hint: user:<id> or group:<group-name>
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -102,14 +106,15 @@ nouns:
         expr: join(map(it.owners, {#.name}), ", ")
         mutable_path: owners
         # Same addressing as feature_flag owners: users by id (v4 returns an id, not an
-        # email), groups by identifier. Use "harness list user" to look an id up.
+        # email), groups by name under "identifier". Use "harness list user" to look an
+        # id up.
         field_type: object_set
         member_expr: >-
           lower(split(member, ":")[0]) == "user" ? {type: "USER", id: member[5:]} :
           lower(split(member, ":")[0]) == "group" ? {type: "GROUP", identifier: member[6:]} :
           nil
         member_identity: 'el.type == "USER" ? "user:" + el.id : "group:" + el.identifier'
-        member_hint: user:<id> or group:<identifier>
+        member_hint: user:<id> or group:<group-name>
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -270,10 +275,13 @@ commands:
       # Omitting them would make every member mutation start from empty and wipe the rest.
       # They are reshaped on the way out because v4 accepts a narrower shape than it
       # returns: tags read as {id, name} but write as {name}, owners read as
-      # {id, name, type} but write as {type, id} / {type, identifier}.
+      # {id, name, type} but write as {type, id} for users and {type, identifier} for
+      # groups — where a group's identifier is its name, which is what the read returns
+      # under "name". Sending the group's id here would 400 every update on any entity
+      # that already has a group owner.
       #
       # rolloutStatus stays out — it is a scalar, so --set creates the path itself.
-      update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.id}))}'
+      update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.name}))}'
       update_body_wrap: ""
       query_params:
         account_id: auth.account
@@ -779,9 +787,10 @@ commands:
       # they are object_set collections whose members --set/--del mutate in place, and a
       # merge patch replaces an array wholesale, so the pick must start from the current
       # members. v4 returns a wider shape than it accepts — tags read as {id, name} but
-      # write as {name}, owners read as {id, type, name, email} but write as {type, id} /
-      # {type, identifier}.
-      update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.id}))}'
+      # write as {name}, owners read as {id, type, name, email} but write as {type, id}
+      # for users and {type, identifier} for groups, where a group's identifier is the
+      # name the read returns.
+      update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.name}))}'
       update_body_wrap: ""
       query_params:
         account_id: auth.account

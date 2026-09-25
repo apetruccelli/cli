@@ -666,9 +666,9 @@ func TestFMESpec_UpdateSegment_TagsOwners(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal owners: %v", err)
 	}
-	wantOwners := `[{"id":"u1","type":"USER"},{"identifier":"g1","type":"GROUP"},{"id":"u2","type":"USER"}]`
+	wantOwners := `[{"id":"u1","type":"USER"},{"identifier":"platform","type":"GROUP"},{"id":"u2","type":"USER"}]`
 	if string(gotOwners) != wantOwners {
-		t.Errorf("PATCH owners = %s, want %s (existing kept and reshaped, u2 added)", gotOwners, wantOwners)
+		t.Errorf("PATCH owners = %s, want %s (existing kept and reshaped — the group goes out under its name, u2 added)", gotOwners, wantOwners)
 	}
 }
 
@@ -1430,9 +1430,9 @@ func TestFMESpec_UpdateFeatureFlag_TagsOwnersCarryOver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal owners: %v", err)
 	}
-	wantOwners := `[{"id":"u1","type":"USER"},{"identifier":"g1","type":"GROUP"},{"id":"u2","type":"USER"}]`
+	wantOwners := `[{"id":"u1","type":"USER"},{"identifier":"platform","type":"GROUP"},{"id":"u2","type":"USER"}]`
 	if string(gotOwners) != wantOwners {
-		t.Errorf("PATCH owners = %s, want %s (existing kept and reshaped, u2 added)", gotOwners, wantOwners)
+		t.Errorf("PATCH owners = %s, want %s (existing kept and reshaped — the group goes out under its name, u2 added)", gotOwners, wantOwners)
 	}
 }
 
