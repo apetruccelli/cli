@@ -1282,6 +1282,53 @@ func TestFMESpec_CreateFeatureFlag(t *testing.T) {
 	}
 }
 
+// TestFMESpec_CreateFeatureFlag_ObjectSetMember asserts an object_set member can be set
+// at creation time. create is a separate call site from update: there is no GET to seed
+// the collection from, so the member has to be built into a fresh array.
+func TestFMESpec_CreateFeatureFlag_ObjectSetMember(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create feature_flag: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{"entity":{"name":"new-flag"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "new-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"traffic-type": "user"}
+	ctx.SetArgs = map[string]string{"tags.born": "", "owners.user:u1": ""}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal((*caps)[0].body, &body); err != nil {
+		t.Fatalf("unmarshal POST body: %v", err)
+	}
+	gotTags, err := json.Marshal(body["tags"])
+	if err != nil {
+		t.Fatalf("marshal tags: %v", err)
+	}
+	if want := `[{"name":"born"}]`; string(gotTags) != want {
+		t.Errorf("POST tags = %s, want %s", gotTags, want)
+	}
+	gotOwners, err := json.Marshal(body["owners"])
+	if err != nil {
+		t.Fatalf("marshal owners: %v", err)
+	}
+	if want := `[{"id":"u1","type":"USER"}]`; string(gotOwners) != want {
+		t.Errorf("POST owners = %s, want %s", gotOwners, want)
+	}
+}
+
 // TestFMESpec_UpdateFeatureFlag drives "update feature_flag --set description=..."
 // and asserts the get-then-patch PATCH body is scoped to the writable fields only
 // (FME-17257 fix — previously sent the whole GET'd object back, including
