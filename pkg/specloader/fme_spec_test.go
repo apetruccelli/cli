@@ -605,8 +605,70 @@ func TestFMESpec_UpdateSegment(t *testing.T) {
 	if err := json.Unmarshal(patch.body, &body); err != nil {
 		t.Fatalf("unmarshal PATCH body: %v", err)
 	}
-	if len(body) != 1 || body["description"] != "new desc" {
-		t.Fatalf("PATCH body = %v, want exactly {description: new desc} — no leaked id/name/trafficType/status/segmentType", body)
+	if len(body) != 3 || body["description"] != "new desc" {
+		t.Fatalf("PATCH body = %v, want {description: new desc, tags, owners} — no leaked id/name/trafficType/status/segmentType", body)
+	}
+	// The GET carried no tags/owners, so the carried-over collections are empty.
+	for _, k := range []string{"tags", "owners"} {
+		arr, ok := body[k].([]any)
+		if !ok || len(arr) != 0 {
+			t.Fatalf("PATCH body[%q] = %v, want empty array", k, body[k])
+		}
+	}
+}
+
+// TestFMESpec_UpdateSegment_TagsOwners drives --set/--del over the segment's tags and
+// owners object_set collections and asserts the PATCH carries the members the GET
+// returned, reshaped from the read shape into the narrower shape v4 accepts.
+func TestFMESpec_UpdateSegment_TagsOwners(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "segment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update segment: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-segment","description":"desc",` +
+		`"tags":[{"id":"t1","name":"alpha"},{"id":"t2","name":"beta"}],` +
+		`"owners":[{"id":"u1","name":"alice","type":"USER","email":"alice@x.com"},` +
+		`{"id":"g1","name":"platform","type":"GROUP"}]}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"my-segment"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"segment-type": "STANDARD"}
+	ctx.SetArgs = map[string]string{"tags.gamma": "", "owners.user:u2": ""}
+	ctx.DelArgs = []string{"tags.alpha"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal((*caps)[1].body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+
+	gotTags, err := json.Marshal(body["tags"])
+	if err != nil {
+		t.Fatalf("marshal tags: %v", err)
+	}
+	if wantTags := `[{"name":"beta"},{"name":"gamma"}]`; string(gotTags) != wantTags {
+		t.Errorf("PATCH tags = %s, want %s (beta kept, alpha removed, gamma added, ids dropped)", gotTags, wantTags)
+	}
+
+	gotOwners, err := json.Marshal(body["owners"])
+	if err != nil {
+		t.Fatalf("marshal owners: %v", err)
+	}
+	wantOwners := `[{"id":"u1","type":"USER"},{"identifier":"g1","type":"GROUP"},{"id":"u2","type":"USER"}]`
+	if string(gotOwners) != wantOwners {
+		t.Errorf("PATCH owners = %s, want %s (existing kept and reshaped, u2 added)", gotOwners, wantOwners)
 	}
 }
 
@@ -1260,8 +1322,111 @@ func TestFMESpec_UpdateFeatureFlag(t *testing.T) {
 	if err := json.Unmarshal(patch.body, &body); err != nil {
 		t.Fatalf("unmarshal PATCH body: %v", err)
 	}
-	if len(body) != 1 || body["description"] != "new desc" {
-		t.Fatalf("PATCH body = %v, want exactly {description: new desc} — no leaked id/createdAt/nested objects", body)
+	if len(body) != 3 || body["description"] != "new desc" {
+		t.Fatalf("PATCH body = %v, want {description: new desc, tags, owners} — no leaked id/createdAt/nested objects", body)
+	}
+	// The GET carried no tags/owners, so the carried-over collections are empty.
+	for _, k := range []string{"tags", "owners"} {
+		arr, ok := body[k].([]any)
+		if !ok || len(arr) != 0 {
+			t.Fatalf("PATCH body[%q] = %v, want empty array", k, body[k])
+		}
+	}
+}
+
+// TestFMESpec_UpdateFeatureFlag_TagsOwnersCarryOver asserts that mutating one member of
+// a collection carries the untouched members through. The PATCH is a merge patch, which
+// replaces an array wholesale, so a pick that dropped tags/owners would silently wipe
+// every member the user did not name.
+func TestFMESpec_UpdateFeatureFlag_TagsOwnersCarryOver(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-flag","description":"old desc",` +
+		`"tags":[{"id":"t1","name":"alpha"},{"id":"t2","name":"beta"}],` +
+		`"owners":[{"id":"u1","name":"alice","type":"USER"},{"id":"g1","name":"platform","type":"GROUP"}]}`
+	patchResp := `{"entity":{"name":"my-flag"}}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.SetArgs = map[string]string{"tags.gamma": "", "owners.user:u2": ""}
+	ctx.DelArgs = []string{"tags.alpha"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal((*caps)[1].body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+
+	gotTags, err := json.Marshal(body["tags"])
+	if err != nil {
+		t.Fatalf("marshal tags: %v", err)
+	}
+	if wantTags := `[{"name":"beta"},{"name":"gamma"}]`; string(gotTags) != wantTags {
+		t.Errorf("PATCH tags = %s, want %s (beta kept, alpha removed, gamma added, ids dropped)", gotTags, wantTags)
+	}
+
+	gotOwners, err := json.Marshal(body["owners"])
+	if err != nil {
+		t.Fatalf("marshal owners: %v", err)
+	}
+	wantOwners := `[{"id":"u1","type":"USER"},{"identifier":"g1","type":"GROUP"},{"id":"u2","type":"USER"}]`
+	if string(gotOwners) != wantOwners {
+		t.Errorf("PATCH owners = %s, want %s (existing kept and reshaped, u2 added)", gotOwners, wantOwners)
+	}
+}
+
+// TestFMESpec_UpdateFeatureFlag_DelOwnerByID asserts --del owners.user:<id>
+// matches the owner the GET returned. Owners are matched on id because the read
+// shape has no email, so an email-keyed member could never match and --del
+// silently did nothing.
+func TestFMESpec_UpdateFeatureFlag_DelOwnerByID(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-flag","owners":[{"id":"u1","name":"alice","type":"USER"},{"id":"u2","name":"bob","type":"USER"}]}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"my-flag"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.DelArgs = []string{"owners.user:u1"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal((*caps)[1].body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	got, err := json.Marshal(body["owners"])
+	if err != nil {
+		t.Fatalf("marshal owners: %v", err)
+	}
+	if want := `[{"id":"u2","type":"USER"}]`; string(got) != want {
+		t.Errorf("PATCH owners = %s, want %s (u1 removed, u2 kept)", got, want)
 	}
 }
 

@@ -30,8 +30,27 @@ nouns:
         mutable_path: rolloutStatus.id
       - id: tags
         expr: join(map(it.tags, {#.name}), ", ")
+        mutable_path: tags
+        # v4 reads tags as {id, name} but writes them as {name}, so a member is just its
+        # name, and update_body_pick reshapes what was read into what can be written.
+        field_type: object_set
+        member_expr: "{name: member}"
+        member_identity: el.name
+        member_hint: <tag-name>
       - id: owners
         expr: join(map(it.owners, {#.name}), ", ")
+        mutable_path: owners
+        # Users are addressed by id, not email: v4 returns owners with an id and no email,
+        # and a member has to be comparable against what was read for --del to match and
+        # --set to stay idempotent. Use "harness list user" to look an id up. Groups are
+        # written under "identifier" where users use "id".
+        field_type: object_set
+        member_expr: >-
+          lower(split(member, ":")[0]) == "user" ? {type: "USER", id: member[5:]} :
+          lower(split(member, ":")[0]) == "group" ? {type: "GROUP", identifier: member[6:]} :
+          nil
+        member_identity: 'el.type == "USER" ? "user:" + el.id : "group:" + el.identifier'
+        member_hint: user:<id> or group:<identifier>
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -72,8 +91,25 @@ nouns:
         expr: it.status
       - id: tags
         expr: join(map(it.tags, {#.name}), ", ")
+        mutable_path: tags
+        # v4 reads tags as {id, name} but writes them as {name}, so a member is just its
+        # name, and update_body_pick reshapes what was read into what can be written.
+        field_type: object_set
+        member_expr: "{name: member}"
+        member_identity: el.name
+        member_hint: <tag-name>
       - id: owners
         expr: join(map(it.owners, {#.name}), ", ")
+        mutable_path: owners
+        # Same addressing as feature_flag owners: users by id (v4 returns an id, not an
+        # email), groups by identifier. Use "harness list user" to look an id up.
+        field_type: object_set
+        member_expr: >-
+          lower(split(member, ":")[0]) == "user" ? {type: "USER", id: member[5:]} :
+          lower(split(member, ":")[0]) == "group" ? {type: "GROUP", identifier: member[6:]} :
+          nil
+        member_identity: 'el.type == "USER" ? "user:" + el.id : "group:" + el.identifier'
+        member_hint: user:<id> or group:<identifier>
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -227,10 +263,17 @@ commands:
       update_strategy: get-then-patch
       # v4's UpdateFeatureFlagRequest accepts only description/tags/owners/rolloutStatus
       # and rejects unknown properties, so the GET response cannot be echoed back —
-      # id/name/trafficType/status/createdAt all make it a 400. Pick the one writable
-      # field the GET carries; rolloutStatus is created by --set via its mutable_path,
-      # and the PATCH is an RFC 7396 merge patch, so anything omitted is left untouched.
-      update_body_pick: "{description: it.description}"
+      # id/name/trafficType/status/createdAt all make it a 400.
+      #
+      # tags/owners must be carried over: they are object_set collections, so --set/--del
+      # mutate the array this pick selected, and a merge patch replaces an array wholesale.
+      # Omitting them would make every member mutation start from empty and wipe the rest.
+      # They are reshaped on the way out because v4 accepts a narrower shape than it
+      # returns: tags read as {id, name} but write as {name}, owners read as
+      # {id, name, type} but write as {type, id} / {type, identifier}.
+      #
+      # rolloutStatus stays out — it is a scalar, so --set creates the path itself.
+      update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.id}))}'
       update_body_wrap: ""
       query_params:
         account_id: auth.account
@@ -730,10 +773,15 @@ commands:
       get_path: /fme/api/v4/segments/{{ctx.id}}
       update_strategy: get-then-patch
       # The v4 PATCH accepts only description/tags/owners, so the GET response cannot be
-      # echoed back: id/name/trafficType/status/segmentType are all rejected. Pick the one
-      # writable field the GET carries — the PATCH is an RFC 7396 merge patch, so the
-      # omitted collections are left untouched.
-      update_body_pick: "{description: it.description}"
+      # echoed back: id/name/trafficType/status/segmentType are all rejected.
+      #
+      # tags/owners are carried over and reshaped for the same reasons as on feature_flag:
+      # they are object_set collections whose members --set/--del mutate in place, and a
+      # merge patch replaces an array wholesale, so the pick must start from the current
+      # members. v4 returns a wider shape than it accepts — tags read as {id, name} but
+      # write as {name}, owners read as {id, type, name, email} but write as {type, id} /
+      # {type, identifier}.
+      update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.id}))}'
       update_body_wrap: ""
       query_params:
         account_id: auth.account
