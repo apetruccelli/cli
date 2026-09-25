@@ -605,15 +605,10 @@ func TestFMESpec_UpdateSegment(t *testing.T) {
 	if err := json.Unmarshal(patch.body, &body); err != nil {
 		t.Fatalf("unmarshal PATCH body: %v", err)
 	}
-	if len(body) != 3 || body["description"] != "new desc" {
-		t.Fatalf("PATCH body = %v, want {description: new desc, tags, owners} — no leaked id/name/trafficType/status/segmentType", body)
-	}
-	// The GET carried no tags/owners, so the carried-over collections are empty.
-	for _, k := range []string{"tags", "owners"} {
-		arr, ok := body[k].([]any)
-		if !ok || len(arr) != 0 {
-			t.Fatalf("PATCH body[%q] = %v, want empty array", k, body[k])
-		}
+	// Only description: tags/owners are seeded lazily, and this update names neither, so
+	// an entity whose owners the API can no longer resolve still takes a description change.
+	if len(body) != 1 || body["description"] != "new desc" {
+		t.Fatalf("PATCH body = %v, want only {description: new desc} — no leaked id/name/trafficType/status/segmentType, no untouched collections", body)
 	}
 }
 
@@ -1369,15 +1364,50 @@ func TestFMESpec_UpdateFeatureFlag(t *testing.T) {
 	if err := json.Unmarshal(patch.body, &body); err != nil {
 		t.Fatalf("unmarshal PATCH body: %v", err)
 	}
-	if len(body) != 3 || body["description"] != "new desc" {
-		t.Fatalf("PATCH body = %v, want {description: new desc, tags, owners} — no leaked id/createdAt/nested objects", body)
+	// Only description: tags/owners are seeded lazily, and this update names neither, so
+	// an entity whose owners the API can no longer resolve still takes a description change.
+	if len(body) != 1 || body["description"] != "new desc" {
+		t.Fatalf("PATCH body = %v, want only {description: new desc} — no leaked id/createdAt/nested objects, no untouched collections", body)
 	}
-	// The GET carried no tags/owners, so the carried-over collections are empty.
-	for _, k := range []string{"tags", "owners"} {
-		arr, ok := body[k].([]any)
-		if !ok || len(arr) != 0 {
-			t.Fatalf("PATCH body[%q] = %v, want empty array", k, body[k])
-		}
+}
+
+// TestFMESpec_UpdateFeatureFlag_UntouchedCollectionsNotSent is the flip side of the
+// carry-over test: a flag that has tags and owners takes a description-only update
+// without either collection appearing in the PATCH. That matters because v4 re-resolves
+// every owner it is sent, so carrying owners unconditionally would make an owner the API
+// can no longer resolve fail an update that has nothing to do with owners.
+func TestFMESpec_UpdateFeatureFlag_UntouchedCollectionsNotSent(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-flag","description":"old desc",` +
+		`"tags":[{"id":"t1","name":"alpha"}],` +
+		`"owners":[{"id":"g1","name":"All Project Users","type":"GROUP"}]}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"my-flag"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.SetArgs = map[string]string{"description": "new desc"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal((*caps)[1].body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if len(body) != 1 || body["description"] != "new desc" {
+		t.Fatalf("PATCH body = %v, want only {description: new desc} — the untouched tags and owners must not be sent", body)
 	}
 }
 

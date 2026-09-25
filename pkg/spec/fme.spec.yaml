@@ -32,8 +32,11 @@ nouns:
         expr: join(map(it.tags, {#.name}), ", ")
         mutable_path: tags
         # v4 reads tags as {id, name} but writes them as {name}, so a member is just its
-        # name, and update_body_pick reshapes what was read into what can be written.
+        # name, and the seed reshapes what was read into what can be written. The seed is
+        # what makes --set/--del start from the tags the entity already has instead of
+        # replacing them all, and it only runs when a mutation names this field.
         field_type: object_set
+        mutable_seed_expr: 'it.tags == nil ? [] : map(it.tags, ({name: #.name}))'
         member_expr: "{name: member}"
         member_identity: el.name
         member_hint: <tag-name>
@@ -55,6 +58,13 @@ nouns:
           nil
         member_identity: 'el.type == "USER" ? "user:" + el.id : "group:" + el.identifier'
         member_hint: user:<id> or group:<group-name>
+        # Seeded from the read so --set/--del start from the current owners rather than
+        # replacing them, reshaped here because v4 reads {id, type, name, email} and writes
+        # {type, id} or {type, identifier}. Only evaluated when a mutation names owners, so
+        # an update that does not touch them never sends them.
+        mutable_seed_expr: >-
+          it.owners == nil ? [] : map(it.owners, (#.type == "USER" ?
+          {type: "USER", id: #.id} : {type: "GROUP", identifier: #.name}))
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -97,8 +107,11 @@ nouns:
         expr: join(map(it.tags, {#.name}), ", ")
         mutable_path: tags
         # v4 reads tags as {id, name} but writes them as {name}, so a member is just its
-        # name, and update_body_pick reshapes what was read into what can be written.
+        # name, and the seed reshapes what was read into what can be written. The seed is
+        # what makes --set/--del start from the tags the entity already has instead of
+        # replacing them all, and it only runs when a mutation names this field.
         field_type: object_set
+        mutable_seed_expr: 'it.tags == nil ? [] : map(it.tags, ({name: #.name}))'
         member_expr: "{name: member}"
         member_identity: el.name
         member_hint: <tag-name>
@@ -115,6 +128,13 @@ nouns:
           nil
         member_identity: 'el.type == "USER" ? "user:" + el.id : "group:" + el.identifier'
         member_hint: user:<id> or group:<group-name>
+        # Seeded from the read so --set/--del start from the current owners rather than
+        # replacing them, reshaped here because v4 reads {id, type, name, email} and writes
+        # {type, id} or {type, identifier}. Only evaluated when a mutation names owners, so
+        # an update that does not touch them never sends them.
+        mutable_seed_expr: >-
+          it.owners == nil ? [] : map(it.owners, (#.type == "USER" ?
+          {type: "USER", id: #.id} : {type: "GROUP", identifier: #.name}))
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -270,18 +290,13 @@ commands:
       # and rejects unknown properties, so the GET response cannot be echoed back —
       # id/name/trafficType/status/createdAt all make it a 400.
       #
-      # tags/owners must be carried over: they are object_set collections, so --set/--del
-      # mutate the array this pick selected, and a merge patch replaces an array wholesale.
-      # Omitting them would make every member mutation start from empty and wipe the rest.
-      # They are reshaped on the way out because v4 accepts a narrower shape than it
-      # returns: tags read as {id, name} but write as {name}, owners read as
-      # {id, name, type} but write as {type, id} for users and {type, identifier} for
-      # groups — where a group's identifier is its name, which is what the read returns
-      # under "name". Sending the group's id here would 400 every update on any entity
-      # that already has a group owner.
+      # tags/owners stay out too, even though --set/--del mutate them: each carries a
+      # mutable_seed_expr, so the framework fetches their current members from the GET only
+      # when a mutation names them. Carrying them here instead would send them on every
+      # update, so an owner the API can no longer resolve would 400 a description change.
       #
       # rolloutStatus stays out — it is a scalar, so --set creates the path itself.
-      update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.name}))}'
+      update_body_pick: "{description: it.description}"
       update_body_wrap: ""
       query_params:
         account_id: auth.account
@@ -783,14 +798,10 @@ commands:
       # The v4 PATCH accepts only description/tags/owners, so the GET response cannot be
       # echoed back: id/name/trafficType/status/segmentType are all rejected.
       #
-      # tags/owners are carried over and reshaped for the same reasons as on feature_flag:
-      # they are object_set collections whose members --set/--del mutate in place, and a
-      # merge patch replaces an array wholesale, so the pick must start from the current
-      # members. v4 returns a wider shape than it accepts — tags read as {id, name} but
-      # write as {name}, owners read as {id, type, name, email} but write as {type, id}
-      # for users and {type, identifier} for groups, where a group's identifier is the
-      # name the read returns.
-      update_body_pick: '{description: it.description, tags: it.tags == nil ? [] : map(it.tags, ({name: #.name})), owners: it.owners == nil ? [] : map(it.owners, (#.type == "USER" ? {type: "USER", id: #.id} : {type: "GROUP", identifier: #.name}))}'
+      # tags/owners stay out for the same reason as on feature_flag: their mutable_seed_expr
+      # supplies the current members only when a --set/--del names them, so an update that
+      # does not touch a collection never sends it.
+      update_body_pick: "{description: it.description}"
       update_body_wrap: ""
       query_params:
         account_id: auth.account
