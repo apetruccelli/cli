@@ -310,10 +310,24 @@ type FieldDef struct {
 	// "object_set" (an array of objects each addressed by one member string; see MemberExpr).
 	//
 	// The collection types ("tags", "set", "object_set") mutate the subtree that
-	// update_body_pick selected, so the pick MUST include the field or the mutation
-	// starts from an empty array and merge-patch replaces the whole collection.
-	// Scalars are safe to omit from the pick, since --set creates the path.
+	// update_body_pick selected, so the mutation must start from the current members or
+	// merge-patch replaces the whole collection with whatever the mutation produced.
+	// Either include the field in the pick, or give it a MutableSeedExpr — prefer the
+	// latter, so the collection is only sent when the user actually mutates it.
+	// Scalars need neither, since --set creates the path.
 	FieldType string `yaml:"field_type,omitempty"`
+	// MutableSeedExpr optionally supplies a collection's current members for --set/--del
+	// when update_body_pick did not include the field. It is an expr-lang expression
+	// evaluated against the GET response ("it") and must produce the shape the API accepts
+	// on write, which is often narrower than what the GET returned — e.g.
+	// 'map(it.tags, {name: #.name})' to drop server-assigned ids.
+	//
+	// It is evaluated lazily: only when a --set/--del names the field, and only when the
+	// picked body has no value at MutablePath. That is what lets the pick stay minimal — an
+	// update that touches nothing else sends no collection at all, so a member the API can
+	// no longer resolve cannot fail an unrelated update. Ignored on create, which has no
+	// GET to seed from and correctly starts empty.
+	MutableSeedExpr string `yaml:"mutable_seed_expr,omitempty"`
 	// MemberExpr is required for field_type "object_set": an expr-lang expression turning
 	// the member string the user typed (bound as "member") into the object to store in the
 	// array, e.g. '{name: member}'. Returning nil rejects the member as malformed.
