@@ -1269,6 +1269,10 @@ func TestFMESpec_UpdateFeatureFlag(t *testing.T) {
 // "update feature_flag --set rollout_status=<id>" and asserts the PATCH body
 // sends {rolloutStatus: {id: ...}} — the v4 API rejects {rolloutStatus: {name: ...}}
 // (the shape documented in Confluence) with a 400 "Invalid json structure".
+//
+// It also guards the narrowed update_body_pick: setting only rollout_status must
+// carry the existing description through untouched, since the pick is what
+// re-sends it and a dropped key here would silently clear the field.
 func TestFMESpec_UpdateFeatureFlag_RolloutStatus(t *testing.T) {
 	reg := registry.New()
 	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
@@ -1302,6 +1306,9 @@ func TestFMESpec_UpdateFeatureFlag_RolloutStatus(t *testing.T) {
 	rs, ok := body["rolloutStatus"].(map[string]any)
 	if !ok || rs["id"] != "rs-2" {
 		t.Fatalf("PATCH body = %v, want rolloutStatus.id=rs-2 (not rolloutStatus.name)", body)
+	}
+	if body["description"] != "old desc" {
+		t.Errorf("PATCH description = %v, want %q — a rollout_status-only update must not clear the description", body["description"], "old desc")
 	}
 }
 
