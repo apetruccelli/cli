@@ -2375,6 +2375,63 @@ func TestFMESpec_UpdateMetric(t *testing.T) {
 	}
 }
 
+// TestFMESpec_UpdateMetric_FileBody drives "update metric <id> -f patch.json", confirming
+// the file is sent as-is (no GET, no update_body_pick) as a merge-patch document.
+func TestFMESpec_UpdateMetric_FileBody(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update metric: command not found or missing endpoint spec")
+	}
+
+	var gotMethod, gotPath, gotCT, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotCT = r.Header.Get("Content-Type")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"entity":`+gotBody+`}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	fileBody := `{"description":"new desc"}`
+	filePath := filepath.Join(t.TempDir(), "patch.json")
+	if err := os.WriteFile(filePath, []byte(fileBody), 0o600); err != nil {
+		t.Fatalf("writing input file: %v", err)
+	}
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "metric-1"
+	ctx.Noun = "metric"
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"file": filePath}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if gotMethod != "PATCH" || gotPath != "/fme/api/v4/metrics/metric-1" {
+		t.Fatalf("request = %s %s, want PATCH /fme/api/v4/metrics/metric-1", gotMethod, gotPath)
+	}
+	if gotCT != "application/merge-patch+json" {
+		t.Fatalf("Content-Type = %q, want application/merge-patch+json", gotCT)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if len(body) != 1 || body["description"] != "new desc" {
+		t.Fatalf("PATCH body = %v, want exactly {description: new desc} (file sent as-is, no GET/pick)", body)
+	}
+}
+
 // TestFMESpec_UpdateMetric_ImmutableFields asserts --set name=/--set traffic_type=
 // are rejected: name/trafficType have no mutable_path on the metric noun, matching
 // the v4 API's immutability of both fields on PATCH.

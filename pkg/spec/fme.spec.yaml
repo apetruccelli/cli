@@ -1089,13 +1089,14 @@ commands:
   - command: update metric
     verb: update
     noun: metric
-    short: "Update a metric: harness update metric <metric-id> --set description=foo"
+    short: "Update a metric: harness update metric <metric-id> --set description=foo (or -f patch.json)"
     handler_type: endpoint
     flags_builtin:
       set: true
       del: true
     endpoint:
       method: PATCH
+      file_body: optional
       path: /fme/api/v4/metrics/{{ctx.id}}
       get_path: /fme/api/v4/metrics/{{ctx.id}}
       update_strategy: get-then-patch
