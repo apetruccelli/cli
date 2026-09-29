@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/harness/cli/v3/modules/fme"
 	"github.com/harness/cli/v3/pkg/auth"
 	"github.com/harness/cli/v3/pkg/cmdctx"
 	"github.com/harness/cli/v3/pkg/registry"
@@ -1377,5 +1378,223 @@ func TestFMESpec_ArchiveUnarchiveFeatureFlag(t *testing.T) {
 				t.Fatalf("body = %v, want comment=%q title=%q", body, "audit why", "audit what")
 			}
 		})
+	}
+}
+
+// TestFMESpec_UpdateFeatureFlag_AddDelTags drives "update feature_flag --add
+// tags.foo --del tags.delta" and asserts the PATCH body carries the surviving
+// tags collection (epsilon kept, delta removed, foo appended) and omits
+// description/owners, which were never touched (FME-17257: fme:tags field type).
+func TestFMESpec_UpdateFeatureFlag_AddDelTags(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-flag","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE",` +
+		`"rolloutStatus":{"name":"Ramp"},` +
+		`"tags":[{"id":"t1","name":"delta"},{"id":"t2","name":"epsilon"}],` +
+		`"owners":[{"id":"u1","type":"USER","name":"Alice"}],"createdAt":"2026-01-01T00:00:00Z"}`
+	patchResp := `{"entity":{"name":"my-flag"}}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationDelete, Key: "tags.delta", Raw: "tags.delta"},
+		{Kind: cmdctx.MutationAdd, Key: "tags.foo", Raw: "tags.foo"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if _, present := body["description"]; present {
+		t.Errorf("PATCH body = %v, description should be omitted (untouched)", body)
+	}
+	if _, present := body["owners"]; present {
+		t.Errorf("PATCH body = %v, owners should be omitted (untouched)", body)
+	}
+	tags, ok := body["tags"].([]any)
+	if !ok || len(tags) != 2 {
+		t.Fatalf("PATCH body tags = %v, want 2 entries (epsilon, foo)", body["tags"])
+	}
+	got := []string{tagName(tags[0]), tagName(tags[1])}
+	want := []string{"epsilon", "foo"}
+	if got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("PATCH body tags = %v, want %v", got, want)
+	}
+	for _, tag := range tags {
+		m := tag.(map[string]any)
+		if len(m) != 1 {
+			t.Errorf("tag entry %v carries more than {name}; expected read-only id stripped", m)
+		}
+	}
+}
+
+func tagName(v any) string {
+	m, _ := v.(map[string]any)
+	name, _ := m["name"].(string)
+	return name
+}
+
+// TestFMESpec_UpdateFeatureFlag_AddDelOwners drives "update feature_flag --del
+// owners.user:u1 --add owners.user:bob@example.com" and asserts the PATCH body
+// sends the write shape ({type, id|email}) with the deleted USER owner gone
+// and the new one added by email (FME-17257: fme:owners field type, owners by email).
+func TestFMESpec_UpdateFeatureFlag_AddDelOwners(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-flag","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE",` +
+		`"rolloutStatus":{"name":"Ramp"},"tags":[],` +
+		`"owners":[{"id":"u1","type":"USER","name":"Alice"}],"createdAt":"2026-01-01T00:00:00Z"}`
+	patchResp := `{"entity":{"name":"my-flag"}}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationDelete, Key: "owners.user:u1", Raw: "owners.user:u1"},
+		{Kind: cmdctx.MutationAdd, Key: "owners.user:bob@example.com", Raw: "owners.user:bob@example.com"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	owners, ok := body["owners"].([]any)
+	if !ok || len(owners) != 1 {
+		t.Fatalf("PATCH body owners = %v, want exactly 1 entry (bob, added by email)", body["owners"])
+	}
+	entry := owners[0].(map[string]any)
+	if entry["type"] != "USER" || entry["email"] != "bob@example.com" {
+		t.Fatalf("owner entry = %v, want {type: USER, email: bob@example.com}", entry)
+	}
+	if _, present := entry["id"]; present {
+		t.Errorf("owner entry = %v, added-by-email owner should not carry an id", entry)
+	}
+}
+
+// TestFMESpec_UpdateFeatureFlag_Owners_PreservedGroupHasNoIdentifier asserts that
+// touching owners while an existing GROUP owner is present (carried from the GET,
+// which never returns a group's identifier — only its name) fails clearly instead
+// of silently dropping the group or sending a broken request (FME-17257,
+// docs/mutation.md's documented owners/groups limitation).
+func TestFMESpec_UpdateFeatureFlag_Owners_PreservedGroupHasNoIdentifier(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-flag","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE",` +
+		`"rolloutStatus":{"name":"Ramp"},"tags":[],` +
+		`"owners":[{"id":"g1","type":"GROUP","name":"platform-team"}],"createdAt":"2026-01-01T00:00:00Z"}`
+	srv, _ := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"my-flag"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationAdd, Key: "owners.user:bob@example.com", Raw: "owners.user:bob@example.com"},
+	}
+
+	_, err := registry.RunEndpoint(ctx, cs.Endpoint)
+	if err == nil {
+		t.Fatal("RunEndpoint: want error preserving an existing group owner with no identifier, got nil")
+	}
+	if !strings.Contains(err.Error(), "platform-team") {
+		t.Fatalf("error = %v, want it to name the unwritable group owner", err)
+	}
+}
+
+// TestFMESpec_CreateFeatureFlag_TagsOwners drives "create feature_flag --add
+// tags.foo --add owners.user:bob@example.com" (create_strategy: set-fields,
+// no GET) and asserts the POST body carries both collections in their write
+// shape from a first --add touch (FME-17257).
+func TestFMESpec_CreateFeatureFlag_TagsOwners(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create feature_flag: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"entity":{"name":"new-flag","trafficType":{"name":"user"},"status":"ACTIVE"}}`
+	srv, caps := fmeSequenceServer(t, []string{fixture})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "new-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"traffic-type": "user"}
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationAdd, Key: "tags.foo", Raw: "tags.foo"},
+		{Kind: cmdctx.MutationAdd, Key: "owners.user:bob@example.com", Raw: "owners.user:bob@example.com"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	tags, ok := body["tags"].([]any)
+	if !ok || len(tags) != 1 || tagName(tags[0]) != "foo" {
+		t.Fatalf("body tags = %v, want [{name: foo}]", body["tags"])
+	}
+	owners, ok := body["owners"].([]any)
+	if !ok || len(owners) != 1 {
+		t.Fatalf("body owners = %v, want 1 entry", body["owners"])
+	}
+	entry := owners[0].(map[string]any)
+	if entry["type"] != "USER" || entry["email"] != "bob@example.com" {
+		t.Fatalf("owner entry = %v, want {type: USER, email: bob@example.com}", entry)
 	}
 }

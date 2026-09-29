@@ -30,8 +30,12 @@ nouns:
         mutable_path: rolloutStatus.id
       - id: tags
         expr: join(map(it.tags, {#.name}), ", ")
+        mutable_path: tags
+        field_type: fme:tags
       - id: owners
         expr: join(map(it.owners, {#.name}), ", ")
+        mutable_path: owners
+        field_type: fme:owners
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -227,10 +231,12 @@ commands:
       update_strategy: get-then-patch
       # v4's UpdateFeatureFlagRequest accepts only description/tags/owners/rolloutStatus
       # and rejects unknown properties, so the GET response cannot be echoed back —
-      # id/name/trafficType/status/createdAt all make it a 400. Pick the one writable
-      # field the GET carries; rolloutStatus is created by --set via its mutable_path,
+      # id/name/trafficType/status/createdAt all make it a 400. Pick the writable
+      # fields the GET carries; rolloutStatus is created by --set via its mutable_path,
       # and the PATCH is an RFC 7396 merge patch, so anything omitted is left untouched.
-      update_body_pick: "{description: it.description}"
+      # tags/owners are picked (not just description) so --add/--del owners.* and
+      # --add/--del tags.* can preserve the other members of the collection.
+      update_body_pick: "{description: it.description, tags: it.tags, owners: it.owners}"
       update_body_wrap: ""
       query_params:
         account_id: auth.account
