@@ -2316,9 +2316,9 @@ func TestFMESpec_CreateMetric_FileBody(t *testing.T) {
 }
 
 // TestFMESpec_UpdateMetric drives "update metric <id> --set description=..." and asserts
-// the get-then-patch PATCH body is curated to exactly the five mutable scalars
-// (description/format/aggregation/isPositive/spread) — explicitly NOT tags/owners/
-// baseEventTypes/cap, pinning the FME-19300 deferral until object_set (cli#244) lands.
+// the sparse PATCH body contains only the touched field — untouched picked fields (tags,
+// owners, cap, filterEventType, baseEventTypes) never leak into a merge-patch body since
+// buildMutationBodyWithPick only writes touched fieldIDs into the sparse result.
 func TestFMESpec_UpdateMetric(t *testing.T) {
 	reg := registry.New()
 	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
@@ -2429,6 +2429,102 @@ func TestFMESpec_UpdateMetric_FileBody(t *testing.T) {
 	}
 	if len(body) != 1 || body["description"] != "new desc" {
 		t.Fatalf("PATCH body = %v, want exactly {description: new desc} (file sent as-is, no GET/pick)", body)
+	}
+}
+
+// TestFMESpec_CreateMetric_CapAndFilterEventType drives "create metric ... --set
+// cap_metric_value=100 --set cap_granularity=DAYS --set filter_event_type=... --set
+// filter_aggregation=..." and asserts all four land at their v4 wire paths.
+func TestFMESpec_CreateMetric_CapAndFilterEventType(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create metric: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"entity":{"id":"metric-3","name":"capped-metric"}}`
+	srv, caps := fmeSequenceServer(t, []string{fixture})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "capped-metric"
+	ctx.Noun = "metric"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"traffic-type": "user", "event-type": []string{"signup"}}
+	ctx.SetArgs = map[string]string{
+		"format": "NUMBER", "aggregation": "COUNT", "is_positive": "true",
+		"cap_metric_value": "100", "cap_granularity": "DAYS",
+		"filter_event_type": "checkout", "filter_aggregation": "COUNT",
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal((*caps)[0].body, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	cap, ok := body["cap"].(map[string]any)
+	if !ok || cap["metricValueCap"] != "100" || cap["granularity"] != "DAYS" {
+		t.Fatalf("body[cap] = %v, want {metricValueCap: 100, granularity: DAYS}", body["cap"])
+	}
+	filterEventType, ok := body["filterEventType"].(map[string]any)
+	if !ok || filterEventType["eventTypeId"] != "checkout" || filterEventType["filterAggregation"] != "COUNT" {
+		t.Fatalf("body[filterEventType] = %v, want {eventTypeId: checkout, filterAggregation: COUNT}", body["filterEventType"])
+	}
+}
+
+// TestFMESpec_UpdateMetric_CapAndFilterEventType drives "update metric <id> --set
+// cap_metric_value=... --set filter_event_type=..." and asserts the sparse PATCH body
+// carries only the touched nested paths, each as its own {cap: {...}}/{filterEventType: {...}}
+// object — relying on the server's RFC 7396 recursive merge to preserve untouched siblings.
+func TestFMESpec_UpdateMetric_CapAndFilterEventType(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update metric: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"id":"metric-1","name":"my-metric","trafficType":{"name":"user"},"format":"NUMBER","aggregation":"COUNT","isPositive":true,"cap":{"metricValueCap":50,"granularity":"DAYS"},"status":"ACTIVE"}`
+	patchResp := `{"entity":{"id":"metric-1"}}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "metric-1"
+	ctx.Noun = "metric"
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.SetArgs = map[string]string{"cap_metric_value": "200", "filter_event_type": "checkout"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	cap, ok := body["cap"].(map[string]any)
+	if !ok || cap["metricValueCap"] != "200" {
+		t.Fatalf("body[cap] = %v, want {metricValueCap: 200}", body["cap"])
+	}
+	filterEventType, ok := body["filterEventType"].(map[string]any)
+	if !ok || filterEventType["eventTypeId"] != "checkout" {
+		t.Fatalf("body[filterEventType] = %v, want {eventTypeId: checkout}", body["filterEventType"])
+	}
+	for _, leaked := range []string{"format", "aggregation", "isPositive", "name", "trafficType", "id", "status"} {
+		if _, present := body[leaked]; present {
+			t.Fatalf("PATCH body must not include %q (untouched field leaked): %v", leaked, body)
+		}
 	}
 }
 

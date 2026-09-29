@@ -120,6 +120,43 @@ nouns:
       - id: filter_event_type
         label: Filter Event Type
         expr: 'it.filterEventType == nil ? "" : it.filterEventType.eventTypeId'
+        mutable_path: filterEventType.eventTypeId
+      - id: filter_aggregation
+        label: Filter Aggregation
+        expr: 'it.filterEventType == nil ? "" : (it.filterEventType.filterAggregation ?? "")'
+        mutable_path: filterEventType.filterAggregation
+      - id: cap_metric_value
+        label: Cap (Metric Value)
+        expr: 'it.cap == nil ? "" : string(it.cap.metricValueCap ?? 0)'
+        mutable_path: cap.metricValueCap
+      - id: cap_base_event_count
+        label: Cap (Base Event Count)
+        expr: 'it.cap == nil ? "" : string(it.cap.baseEventCountCap ?? 0)'
+        mutable_path: cap.baseEventCountCap
+      - id: cap_base_event_sum
+        label: Cap (Base Event Sum)
+        expr: 'it.cap == nil ? "" : string(it.cap.baseEventSumCap ?? 0)'
+        mutable_path: cap.baseEventSumCap
+      - id: cap_base_event_value
+        label: Cap (Base Event Value)
+        expr: 'it.cap == nil ? "" : string(it.cap.baseEventValueCap ?? 0)'
+        mutable_path: cap.baseEventValueCap
+      - id: cap_filter_event_count
+        label: Cap (Filter Event Count)
+        expr: 'it.cap == nil ? "" : string(it.cap.filterEventCountCap ?? 0)'
+        mutable_path: cap.filterEventCountCap
+      - id: cap_filter_event_sum
+        label: Cap (Filter Event Sum)
+        expr: 'it.cap == nil ? "" : string(it.cap.filterEventSumCap ?? 0)'
+        mutable_path: cap.filterEventSumCap
+      - id: cap_filter_event_value
+        label: Cap (Filter Event Value)
+        expr: 'it.cap == nil ? "" : string(it.cap.filterEventValueCap ?? 0)'
+        mutable_path: cap.filterEventValueCap
+      - id: cap_granularity
+        label: Cap Granularity
+        expr: 'it.cap == nil ? "" : (it.cap.granularity ?? "")'
+        mutable_path: cap.granularity
       - id: tags
         expr: join(map(it.tags, {#.name}), ", ")
         mutable_path: tags
@@ -1100,12 +1137,14 @@ commands:
       path: /fme/api/v4/metrics/{{ctx.id}}
       get_path: /fme/api/v4/metrics/{{ctx.id}}
       update_strategy: get-then-patch
-      # Deliberately narrow: name/trafficType are immutable (rejected by the API), and
-      # baseEventTypes/filterEventType/cap are left out of this pick so a scalar edit here
-      # can never silently resend or clear them as part of the merge-patch body. tags/owners
-      # are picked (not omitted) so a mutation on one via fme:tags/fme:owners preserves the
-      # other — the same reasoning as feature_flag/segment.
-      update_body_pick: "{description: it.description, format: it.format, aggregation: it.aggregation, isPositive: it.isPositive, spread: it.spread, tags: it.tags, owners: it.owners}"
+      # name/trafficType are immutable (rejected by the API) and stay out of this pick.
+      # baseEventTypes is left out too: it's an array of {eventTypeId, propertyFilters} and
+      # there's no flag/mutable_path for it yet, so a stale copy is safer than a silent no-op.
+      # filterEventType and cap ARE update_body_pick-able per UpdateMetricRequest.java, and are
+      # picked here (not omitted) so a scalar --set on one field of either doesn't drop the rest
+      # of that object out of the merge-patch. tags/owners are picked for the same reason, as
+      # with feature_flag/segment.
+      update_body_pick: "{description: it.description, format: it.format, aggregation: it.aggregation, isPositive: it.isPositive, spread: it.spread, filterEventType: it.filterEventType, cap: it.cap, tags: it.tags, owners: it.owners}"
       update_body_wrap: ""
       query_params:
         account_id: auth.account
