@@ -2467,3 +2467,158 @@ func TestFMESpec_GetEventType(t *testing.T) {
 		t.Fatalf("request path = %q, want /fme/api/v4/event-types/signup", *path)
 	}
 }
+
+// TestFMESpec_UpdateMetric_AddDelTags mirrors
+// TestFMESpec_UpdateSegment_AddDelTags for the metric noun
+// (FME-19300 follow-up: metric owners/tags become mutable).
+func TestFMESpec_UpdateMetric_AddDelTags(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update metric: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"id":"metric-1","name":"my-metric","description":"old desc","trafficType":{"name":"user"},` +
+		`"format":"NUMBER","aggregation":"COUNT","isPositive":true,"spread":"PER",` +
+		`"tags":[{"id":"t1","name":"delta"},{"id":"t2","name":"epsilon"}],` +
+		`"owners":[{"id":"u1","type":"USER","name":"Alice"}],"status":"ACTIVE"}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"id":"metric-1"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "metric-1"
+	ctx.Noun = "metric"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationDelete, Key: "tags.delta", Raw: "tags.delta"},
+		{Kind: cmdctx.MutationAdd, Key: "tags.foo", Raw: "tags.foo"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if _, present := body["owners"]; present {
+		t.Errorf("PATCH body = %v, owners should be omitted (untouched)", body)
+	}
+	tags, ok := body["tags"].([]any)
+	if !ok || len(tags) != 2 {
+		t.Fatalf("PATCH body tags = %v, want 2 entries (epsilon, foo)", body["tags"])
+	}
+	got := []string{tagName(tags[0]), tagName(tags[1])}
+	want := []string{"epsilon", "foo"}
+	if got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("PATCH body tags = %v, want %v", got, want)
+	}
+}
+
+// TestFMESpec_UpdateMetric_AddDelOwners mirrors
+// TestFMESpec_UpdateSegment_AddDelOwners for the metric noun
+// (FME-19300 follow-up).
+func TestFMESpec_UpdateMetric_AddDelOwners(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update metric: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"id":"metric-1","name":"my-metric","description":"old desc","trafficType":{"name":"user"},` +
+		`"format":"NUMBER","aggregation":"COUNT","isPositive":true,"spread":"PER","tags":[],` +
+		`"owners":[{"id":"u1","type":"USER","name":"Alice"}],"status":"ACTIVE"}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"id":"metric-1"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "metric-1"
+	ctx.Noun = "metric"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationDelete, Key: "owners.user:u1", Raw: "owners.user:u1"},
+		{Kind: cmdctx.MutationAdd, Key: "owners.user:bob@example.com", Raw: "owners.user:bob@example.com"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	owners, ok := body["owners"].([]any)
+	if !ok || len(owners) != 1 {
+		t.Fatalf("PATCH body owners = %v, want exactly 1 entry (bob, added by email)", body["owners"])
+	}
+	entry := owners[0].(map[string]any)
+	if entry["type"] != "USER" || entry["email"] != "bob@example.com" {
+		t.Fatalf("owner entry = %v, want {type: USER, email: bob@example.com}", entry)
+	}
+}
+
+// TestFMESpec_CreateMetric_TagsOwners mirrors
+// TestFMESpec_CreateSegment_TagsOwners for the metric noun
+// (FME-19300 follow-up).
+func TestFMESpec_CreateMetric_TagsOwners(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create metric: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"entity":{"id":"metric-2","name":"new-metric","trafficType":{"name":"user"},"status":"ACTIVE"}}`
+	srv, caps := fmeSequenceServer(t, []string{fixture})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "new-metric"
+	ctx.Noun = "metric"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"traffic-type": "user", "event-type": []string{"signup"}}
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationAdd, Key: "tags.foo", Raw: "tags.foo"},
+		{Kind: cmdctx.MutationAdd, Key: "owners.user:bob@example.com", Raw: "owners.user:bob@example.com"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	tags, ok := body["tags"].([]any)
+	if !ok || len(tags) != 1 || tagName(tags[0]) != "foo" {
+		t.Fatalf("body tags = %v, want [{name: foo}]", body["tags"])
+	}
+	owners, ok := body["owners"].([]any)
+	if !ok || len(owners) != 1 {
+		t.Fatalf("body owners = %v, want 1 entry", body["owners"])
+	}
+	entry := owners[0].(map[string]any)
+	if entry["type"] != "USER" || entry["email"] != "bob@example.com" {
+		t.Fatalf("owner entry = %v, want {type: USER, email: bob@example.com}", entry)
+	}
+}

@@ -122,8 +122,12 @@ nouns:
         expr: 'it.filterEventType == nil ? "" : it.filterEventType.eventTypeId'
       - id: tags
         expr: join(map(it.tags, {#.name}), ", ")
+        mutable_path: tags
+        field_type: fme:tags
       - id: owners
         expr: join(map(it.owners, {#.name}), ", ")
+        mutable_path: owners
+        field_type: fme:owners
       - id: status
         expr: it.status
       - id: created
@@ -1097,9 +1101,11 @@ commands:
       get_path: /fme/api/v4/metrics/{{ctx.id}}
       update_strategy: get-then-patch
       # Deliberately narrow: name/trafficType are immutable (rejected by the API), and
-      # baseEventTypes/filterEventType/tags/owners/cap are left out of this pick so a scalar
-      # edit here can never silently resend or clear them as part of the merge-patch body.
-      update_body_pick: "{description: it.description, format: it.format, aggregation: it.aggregation, isPositive: it.isPositive, spread: it.spread}"
+      # baseEventTypes/filterEventType/cap are left out of this pick so a scalar edit here
+      # can never silently resend or clear them as part of the merge-patch body. tags/owners
+      # are picked (not omitted) so a mutation on one via fme:tags/fme:owners preserves the
+      # other — the same reasoning as feature_flag/segment.
+      update_body_pick: "{description: it.description, format: it.format, aggregation: it.aggregation, isPositive: it.isPositive, spread: it.spread, tags: it.tags, owners: it.owners}"
       update_body_wrap: ""
       query_params:
         account_id: auth.account
