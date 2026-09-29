@@ -1608,3 +1608,160 @@ func TestFMESpec_CreateFeatureFlag_TagsOwners(t *testing.T) {
 		t.Fatalf("owner entry = %v, want {type: USER, email: bob@example.com}", entry)
 	}
 }
+
+// TestFMESpec_UpdateSegment_AddDelTags mirrors
+// TestFMESpec_UpdateFeatureFlag_AddDelTags for the segment noun, which shares
+// the fme:tags field type (FME-17257 follow-up).
+func TestFMESpec_UpdateSegment_AddDelTags(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "segment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update segment: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-segment","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE",` +
+		`"segmentType":"STANDARD",` +
+		`"tags":[{"id":"t1","name":"delta"},{"id":"t2","name":"epsilon"}],` +
+		`"owners":[{"id":"u1","type":"USER","name":"Alice"}],"createdAt":"2026-01-01T00:00:00Z"}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"my-segment"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"segment-type": "STANDARD"}
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationDelete, Key: "tags.delta", Raw: "tags.delta"},
+		{Kind: cmdctx.MutationAdd, Key: "tags.foo", Raw: "tags.foo"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if _, present := body["owners"]; present {
+		t.Errorf("PATCH body = %v, owners should be omitted (untouched)", body)
+	}
+	tags, ok := body["tags"].([]any)
+	if !ok || len(tags) != 2 {
+		t.Fatalf("PATCH body tags = %v, want 2 entries (epsilon, foo)", body["tags"])
+	}
+	got := []string{tagName(tags[0]), tagName(tags[1])}
+	want := []string{"epsilon", "foo"}
+	if got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("PATCH body tags = %v, want %v", got, want)
+	}
+}
+
+// TestFMESpec_UpdateSegment_AddDelOwners mirrors
+// TestFMESpec_UpdateFeatureFlag_AddDelOwners for the segment noun
+// (FME-17257 follow-up).
+func TestFMESpec_UpdateSegment_AddDelOwners(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "segment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update segment: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"name":"my-segment","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE",` +
+		`"segmentType":"STANDARD","tags":[],` +
+		`"owners":[{"id":"u1","type":"USER","name":"Alice"}],"createdAt":"2026-01-01T00:00:00Z"}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"my-segment"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"segment-type": "STANDARD"}
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationDelete, Key: "owners.user:u1", Raw: "owners.user:u1"},
+		{Kind: cmdctx.MutationAdd, Key: "owners.user:bob@example.com", Raw: "owners.user:bob@example.com"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	owners, ok := body["owners"].([]any)
+	if !ok || len(owners) != 1 {
+		t.Fatalf("PATCH body owners = %v, want exactly 1 entry (bob, added by email)", body["owners"])
+	}
+	entry := owners[0].(map[string]any)
+	if entry["type"] != "USER" || entry["email"] != "bob@example.com" {
+		t.Fatalf("owner entry = %v, want {type: USER, email: bob@example.com}", entry)
+	}
+}
+
+// TestFMESpec_CreateSegment_TagsOwners mirrors
+// TestFMESpec_CreateFeatureFlag_TagsOwners for the segment noun
+// (FME-17257 follow-up).
+func TestFMESpec_CreateSegment_TagsOwners(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "segment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create segment: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"entity":{"name":"new-segment","trafficType":{"name":"user"},"status":"ACTIVE"}}`
+	srv, caps := fmeSequenceServer(t, []string{fixture})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "new-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"traffic-type": "user", "segment-type": "STANDARD"}
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationAdd, Key: "tags.foo", Raw: "tags.foo"},
+		{Kind: cmdctx.MutationAdd, Key: "owners.user:bob@example.com", Raw: "owners.user:bob@example.com"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	tags, ok := body["tags"].([]any)
+	if !ok || len(tags) != 1 || tagName(tags[0]) != "foo" {
+		t.Fatalf("body tags = %v, want [{name: foo}]", body["tags"])
+	}
+	owners, ok := body["owners"].([]any)
+	if !ok || len(owners) != 1 {
+		t.Fatalf("body owners = %v, want 1 entry", body["owners"])
+	}
+	entry := owners[0].(map[string]any)
+	if entry["type"] != "USER" || entry["email"] != "bob@example.com" {
+		t.Fatalf("owner entry = %v, want {type: USER, email: bob@example.com}", entry)
+	}
+}

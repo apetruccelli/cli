@@ -76,8 +76,12 @@ nouns:
         expr: it.status
       - id: tags
         expr: join(map(it.tags, {#.name}), ", ")
+        mutable_path: tags
+        field_type: fme:tags
       - id: owners
         expr: join(map(it.owners, {#.name}), ", ")
+        mutable_path: owners
+        field_type: fme:owners
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -736,10 +740,11 @@ commands:
       get_path: /fme/api/v4/segments/{{ctx.id}}
       update_strategy: get-then-patch
       # The v4 PATCH accepts only description/tags/owners, so the GET response cannot be
-      # echoed back: id/name/trafficType/status/segmentType are all rejected. Pick the one
-      # writable field the GET carries — the PATCH is an RFC 7396 merge patch, so the
-      # omitted collections are left untouched.
-      update_body_pick: "{description: it.description}"
+      # echoed back: id/name/trafficType/status/segmentType are all rejected. Pick the
+      # writable fields the GET carries; tags/owners are included (not just description)
+      # so --add/--del can preserve other collection members under merge-PATCH's
+      # whole-array-replace semantics.
+      update_body_pick: "{description: it.description, tags: it.tags, owners: it.owners}"
       update_body_wrap: ""
       query_params:
         account_id: auth.account
