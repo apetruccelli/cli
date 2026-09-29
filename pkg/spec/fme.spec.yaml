@@ -124,6 +124,11 @@ nouns:
       - id: is_killed
         label: Killed
         expr: string(it.isKilled)
+      - id: flag_sets
+        label: Flag Sets
+        expr: join(map(it.flagSets, {#.id}), ", ")
+        mutable_path: flagSets
+        field_type: fme:flag_sets
       - id: created
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
@@ -197,16 +202,16 @@ commands:
   - command: create feature_flag
     verb: create
     noun: feature_flag
-    short: "Create a feature flag: harness create ff <name> --traffic-type user"
+    short: "Create a feature flag: harness create ff <name> --traffic-type user (or -f ff.json)"
     handler_type: endpoint
     flags:
       - name: traffic-type
-        description: Traffic type for the feature flag (e.g. user, account)
-        required: true
+        description: Traffic type for the feature flag (e.g. user, account); required unless supplied via -f
     flags_builtin:
       set: true
     endpoint:
       method: POST
+      file_body: optional
       path: /fme/api/v4/feature-flags
       query_params:
         account_id: auth.account
@@ -223,13 +228,14 @@ commands:
   - command: update feature_flag
     verb: update
     noun: feature_flag
-    short: "Update a feature flag: harness update ff <name> --set description=foo"
+    short: "Update a feature flag: harness update ff <name> --set description=foo (or -f patch.json)"
     handler_type: endpoint
     flags_builtin:
       set: true
       del: true
     endpoint:
       method: PATCH
+      file_body: optional
       path: /fme/api/v4/feature-flags/{{ctx.id}}
       get_path: /fme/api/v4/feature-flags/{{ctx.id}}
       update_strategy: get-then-patch
@@ -410,7 +416,9 @@ commands:
       path: /fme/api/v4/feature-flag-definitions/{{ctx.id}}
       get_path: /fme/api/v4/feature-flag-definitions/{{ctx.id}}
       update_strategy: get-then-patch
-      update_body_pick: '{trafficAllocation: it.trafficAllocation, defaultTreatment: it.defaultTreatment, baselineTreatment: it.baselineTreatment}'
+      # flagSets is picked (not just the three scalars) so --add/--del flag_sets.* can
+      # preserve the other members of the collection, same reasoning as tags/owners.
+      update_body_pick: '{trafficAllocation: it.trafficAllocation, defaultTreatment: it.defaultTreatment, baselineTreatment: it.baselineTreatment, flagSets: it.flagSets}'
       update_body_wrap: ""
       # comment/title are write-only: v4 accepts them as audit metadata but never stores or
       # returns them, so there is nothing in the GET for update_body_pick to select. As
@@ -690,15 +698,13 @@ commands:
   - command: create segment
     verb: create
     noun: segment
-    short: "Create a segment: harness create segment <name> --traffic-type user --segment-type STANDARD"
+    short: "Create a segment: harness create segment <name> --traffic-type user --segment-type STANDARD (or -f segment.json)"
     handler_type: endpoint
     flags:
       - name: traffic-type
-        description: Traffic type for the segment (e.g. user, account)
-        required: true
+        description: Traffic type for the segment (e.g. user, account); required unless supplied via -f
       - name: segment-type
-        description: "Segment type (required): STANDARD, LARGE, RULE_BASED"
-        required: true
+        description: "Segment type: STANDARD, LARGE, RULE_BASED; required unless supplied via -f"
         completion_values: [STANDARD, LARGE, RULE_BASED]
       - name: description
         description: Segment description
@@ -706,6 +712,7 @@ commands:
       set: true
     endpoint:
       method: POST
+      file_body: optional
       path: /fme/api/v4/segments
       query_params:
         account_id: auth.account
@@ -724,7 +731,7 @@ commands:
   - command: update segment
     verb: update
     noun: segment
-    short: "Update a segment: harness update segment <name> --segment-type STANDARD --set description=foo"
+    short: "Update a segment: harness update segment <name> --segment-type STANDARD --set description=foo (or -f patch.json)"
     handler_type: endpoint
     flags:
       - name: segment-type
@@ -736,6 +743,10 @@ commands:
       del: true
     endpoint:
       method: PATCH
+      # --segment-type stays required: true here (unlike create) because it's a query-param
+      # used to route to the right partition (segment_type below), not a body field a file
+      # could supply instead — so it carries no -f collision risk.
+      file_body: optional
       path: /fme/api/v4/segments/{{ctx.id}}
       get_path: /fme/api/v4/segments/{{ctx.id}}
       update_strategy: get-then-patch

@@ -1765,3 +1765,297 @@ func TestFMESpec_CreateSegment_TagsOwners(t *testing.T) {
 		t.Fatalf("owner entry = %v, want {type: USER, email: bob@example.com}", entry)
 	}
 }
+
+// TestFMESpec_CreateFeatureFlag_FileBody drives "create feature_flag <name> -f ff.json"
+// with no --traffic-type flag at all, confirming file_body: optional lets -f alone satisfy
+// what --traffic-type used to enforce via required: true (that required flag blocked any
+// -f-only invocation with a 400 before the request even went out, the same bug class
+// FME-19300 fixed for metric).
+func TestFMESpec_CreateFeatureFlag_FileBody(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create feature_flag: command not found or missing endpoint spec")
+	}
+
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"entity":`+gotBody+`}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	fileBody := `{"trafficType":"user","description":"from file"}`
+	filePath := filepath.Join(t.TempDir(), "ff.json")
+	if err := os.WriteFile(filePath, []byte(fileBody), 0o600); err != nil {
+		t.Fatalf("writing input file: %v", err)
+	}
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "new-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"file": filePath}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if body["trafficType"] != "user" || body["description"] != "from file" {
+		t.Fatalf("body = %v, want trafficType/description from file", body)
+	}
+	if body["name"] != "new-flag" {
+		t.Fatalf("body[name] = %v, want new-flag (from create_body_init, not overridden by file)", body["name"])
+	}
+}
+
+// TestFMESpec_UpdateFeatureFlag_FileBody drives "update feature_flag <name> -f patch.json",
+// confirming the file is sent as-is (no GET, no update_body_pick) as a merge-patch document.
+func TestFMESpec_UpdateFeatureFlag_FileBody(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag: command not found or missing endpoint spec")
+	}
+
+	var gotMethod, gotPath, gotCT, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotCT = r.Header.Get("Content-Type")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"entity":`+gotBody+`}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	fileBody := `{"description":"new desc"}`
+	filePath := filepath.Join(t.TempDir(), "patch.json")
+	if err := os.WriteFile(filePath, []byte(fileBody), 0o600); err != nil {
+		t.Fatalf("writing input file: %v", err)
+	}
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"file": filePath}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if gotMethod != "PATCH" || gotPath != "/fme/api/v4/feature-flags/my-flag" {
+		t.Fatalf("request = %s %s, want PATCH /fme/api/v4/feature-flags/my-flag", gotMethod, gotPath)
+	}
+	if gotCT != "application/merge-patch+json" {
+		t.Fatalf("Content-Type = %q, want application/merge-patch+json", gotCT)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if len(body) != 1 || body["description"] != "new desc" {
+		t.Fatalf("PATCH body = %v, want exactly {description: new desc} (file sent as-is, no GET/pick)", body)
+	}
+}
+
+// TestFMESpec_CreateSegment_FileBody drives "create segment <name> -f segment.json" with
+// neither --traffic-type nor --segment-type passed, confirming both required: true flags
+// were correctly dropped (file_body: optional now lets -f alone satisfy them).
+func TestFMESpec_CreateSegment_FileBody(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "segment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create segment: command not found or missing endpoint spec")
+	}
+
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"entity":`+gotBody+`}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	fileBody := `{"trafficType":"user","segmentType":"STANDARD","description":"from file"}`
+	filePath := filepath.Join(t.TempDir(), "segment.json")
+	if err := os.WriteFile(filePath, []byte(fileBody), 0o600); err != nil {
+		t.Fatalf("writing input file: %v", err)
+	}
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "new-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"file": filePath}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if body["trafficType"] != "user" || body["segmentType"] != "STANDARD" || body["description"] != "from file" {
+		t.Fatalf("body = %v, want trafficType/segmentType/description from file", body)
+	}
+	if body["name"] != "new-segment" {
+		t.Fatalf("body[name] = %v, want new-segment (from create_body_init, not overridden by file)", body["name"])
+	}
+}
+
+// TestFMESpec_UpdateSegment_FileBody drives "update segment <name> --segment-type STANDARD
+// -f patch.json", confirming the file is sent as-is as the merge-patch document while
+// --segment-type still reaches the query string (it stays required: true because it routes
+// to the right partition, not a body field a file could supply instead).
+func TestFMESpec_UpdateSegment_FileBody(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "segment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update segment: command not found or missing endpoint spec")
+	}
+
+	var gotMethod, gotPath, gotQuery, gotCT, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotCT = r.Header.Get("Content-Type")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"entity":`+gotBody+`}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	fileBody := `{"description":"new desc"}`
+	filePath := filepath.Join(t.TempDir(), "patch.json")
+	if err := os.WriteFile(filePath, []byte(fileBody), 0o600); err != nil {
+		t.Fatalf("writing input file: %v", err)
+	}
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"segment-type": "STANDARD", "file": filePath}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if gotMethod != "PATCH" || gotPath != "/fme/api/v4/segments/my-segment" {
+		t.Fatalf("request = %s %s, want PATCH /fme/api/v4/segments/my-segment", gotMethod, gotPath)
+	}
+	if !strings.Contains(gotQuery, "segment_type=STANDARD") {
+		t.Fatalf("query = %q, want segment_type=STANDARD", gotQuery)
+	}
+	if gotCT != "application/merge-patch+json" {
+		t.Fatalf("Content-Type = %q, want application/merge-patch+json", gotCT)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if len(body) != 1 || body["description"] != "new desc" {
+		t.Fatalf("PATCH body = %v, want exactly {description: new desc} (file sent as-is, no GET/pick)", body)
+	}
+}
+
+// TestFMESpec_UpdateFeatureFlagDefinition_AddDelFlagSets drives "update ff:definition <name>
+// --env <id> --add flag_sets.<id> / --del flag_sets.<id>", asserting the fme:flag_sets field
+// type produces the {id} write shape (FlagSetReference — no name/type accepted) and that
+// flagSets being in update_body_pick lets --add/--del touch it without dropping the other
+// picked scalars (defaultTreatment/baselineTreatment/trafficAllocation) from the merge patch.
+func TestFMESpec_UpdateFeatureFlagDefinition_AddDelFlagSets(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "feature_flag:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update feature_flag:definition: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"defaultTreatment":"off","baselineTreatment":"off","trafficAllocation":50,` +
+		`"flagSets":[{"id":"fs-1"},{"id":"fs-2"}]}`
+	patchResp := `{"entity":{"defaultTreatment":"off"}}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "cli-test-flag"
+	ctx.Noun = "feature_flag"
+	ctx.FieldsNoun = cs.FieldsNoun
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationDelete, Key: "flag_sets.fs-1", Raw: "flag_sets.fs-1"},
+		{Kind: cmdctx.MutationAdd, Key: "flag_sets.fs-3", Raw: "flag_sets.fs-3"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if _, present := body["defaultTreatment"]; present {
+		t.Errorf("PATCH body = %v, defaultTreatment should be omitted (untouched)", body)
+	}
+	flagSets, ok := body["flagSets"].([]any)
+	if !ok || len(flagSets) != 2 {
+		t.Fatalf("PATCH body flagSets = %v, want 2 entries (fs-2, fs-3)", body["flagSets"])
+	}
+	idOf := func(v any) string {
+		m, _ := v.(map[string]any)
+		id, _ := m["id"].(string)
+		return id
+	}
+	got := []string{idOf(flagSets[0]), idOf(flagSets[1])}
+	want := []string{"fs-2", "fs-3"}
+	if got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("PATCH body flagSets = %v, want %v", got, want)
+	}
+	for _, fs := range flagSets {
+		if m := fs.(map[string]any); len(m) != 1 {
+			t.Errorf("flag set entry %v carries more than {id}", m)
+		}
+	}
+}

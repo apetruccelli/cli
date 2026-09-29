@@ -13,4 +13,5 @@ import "github.com/harness/cli/v3/pkg/registry"
 func ModuleInit(reg registry.ModuleRegistrar) {
 	reg.RegisterFieldType("owners", ownersFieldType)
 	reg.RegisterFieldType("tags", tagsFieldType)
+	reg.RegisterFieldType("flag_sets", flagSetsFieldType)
 }
