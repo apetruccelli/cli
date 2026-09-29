@@ -2260,6 +2260,61 @@ func TestFMESpec_CreateMetric(t *testing.T) {
 	}
 }
 
+// TestFMESpec_CreateMetric_FileBody drives "create metric <name> -f metric.json" with
+// neither --traffic-type nor --event-type set, confirming trafficType/baseEventTypes
+// supplied inside the file body are not blocked by a required-flag check.
+func TestFMESpec_CreateMetric_FileBody(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create metric: command not found or missing endpoint spec")
+	}
+
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"entity":`+gotBody+`,"governance":null}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	fileBody := `{"trafficType":"user","format":"NUMBER","aggregation":"COUNT","isPositive":true,"baseEventTypes":[{"eventTypeId":"signup"}]}`
+	filePath := filepath.Join(t.TempDir(), "metric.json")
+	if err := os.WriteFile(filePath, []byte(fileBody), 0o600); err != nil {
+		t.Fatalf("writing input file: %v", err)
+	}
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "new-metric"
+	ctx.Noun = "metric"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"file": filePath}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if body["trafficType"] != "user" {
+		t.Fatalf("body[trafficType] = %v, want user (from file, not flag)", body["trafficType"])
+	}
+	baseEventTypes, ok := body["baseEventTypes"].([]any)
+	if !ok || len(baseEventTypes) != 1 {
+		t.Fatalf("body[baseEventTypes] = %v, want one entry from file", body["baseEventTypes"])
+	}
+	if body["name"] != "new-metric" {
+		t.Fatalf("body[name] = %v, want new-metric (from create_body_init, not overridden by file)", body["name"])
+	}
+}
+
 // TestFMESpec_UpdateMetric drives "update metric <id> --set description=..." and asserts
 // the get-then-patch PATCH body is curated to exactly the five mutable scalars
 // (description/format/aggregation/isPositive/spread) — explicitly NOT tags/owners/

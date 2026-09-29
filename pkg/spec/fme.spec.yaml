@@ -1059,20 +1059,19 @@ commands:
   - command: create metric
     verb: create
     noun: metric
-    short: "Create a metric: harness create metric <name> --traffic-type user --event-type signup --set format=NUMBER --set aggregation=COUNT --set isPositive=true"
+    short: "Create a metric: harness create metric <name> --traffic-type user --event-type signup --set format=NUMBER --set aggregation=COUNT --set isPositive=true (or -f metric.json)"
     handler_type: endpoint
     flags:
       - name: traffic-type
-        description: Traffic type for the metric (e.g. user, account)
-        required: true
+        description: Traffic type for the metric (e.g. user, account); required unless supplied via -f
       - name: event-type
-        description: Base event type id (repeatable; at least one is required)
+        description: Base event type id (repeatable; at least one is required unless supplied via -f)
         is_multi: true
-        required: true
     flags_builtin:
       set: true
     endpoint:
       method: POST
+      file_body: optional
       path: /fme/api/v4/metrics
       query_params:
         account_id: auth.account
