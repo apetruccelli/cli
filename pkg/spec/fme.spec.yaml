@@ -1497,8 +1497,6 @@ commands:
     handler_type: endpoint
     flags_builtin:
       set: true
-      add: true
-      del: true
     endpoint:
       method: PATCH
       path: /fme/api/v4/experiments/{{ctx.id}}
