@@ -2528,6 +2528,75 @@ func TestFMESpec_UpdateMetric_CapAndFilterEventType(t *testing.T) {
 	}
 }
 
+// TestFMESpec_CreateAndUpdateMetric_TriggerEventType drives --set trigger_event_type=...
+// on both create and update, asserting it lands at triggerEventType.eventTypeId (the wire
+// shape for the "before event"/HAS_DONE_BEFORE UI concept).
+func TestFMESpec_CreateAndUpdateMetric_TriggerEventType(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+
+	createCS := reg.GetSpec("create", "metric")
+	if createCS == nil || createCS.Endpoint == nil {
+		t.Fatal("create metric: command not found or missing endpoint spec")
+	}
+	createFixture := `{"entity":{"id":"metric-4","name":"trigger-metric"}}`
+	createSrv, createCaps := fmeSequenceServer(t, []string{createFixture})
+
+	createCtx := fmeTestCtx(t, createSrv.URL)
+	createCtx.Id = "trigger-metric"
+	createCtx.Noun = "metric"
+	createCtx.Resolver = reg
+	createCtx.FormatFlags.Format = "json"
+	createCtx.FlagValues = map[string]any{"traffic-type": "user", "event-type": []string{"signup"}}
+	createCtx.SetArgs = map[string]string{
+		"format": "NUMBER", "aggregation": "COUNT", "is_positive": "true",
+		"trigger_event_type": "signed-up",
+	}
+	if _, err := registry.RunEndpoint(createCtx, createCS.Endpoint); err != nil {
+		t.Fatalf("create RunEndpoint: %v", err)
+	}
+	var createBody map[string]any
+	if err := json.Unmarshal((*createCaps)[0].body, &createBody); err != nil {
+		t.Fatalf("unmarshal create request body: %v", err)
+	}
+	triggerEventType, ok := createBody["triggerEventType"].(map[string]any)
+	if !ok || triggerEventType["eventTypeId"] != "signed-up" {
+		t.Fatalf("create body[triggerEventType] = %v, want {eventTypeId: signed-up}", createBody["triggerEventType"])
+	}
+
+	updateCS := reg.GetSpec("update", "metric")
+	if updateCS == nil || updateCS.Endpoint == nil {
+		t.Fatal("update metric: command not found or missing endpoint spec")
+	}
+	getResp := `{"id":"metric-4","name":"trigger-metric","trafficType":{"name":"user"},"format":"NUMBER","aggregation":"COUNT","isPositive":true,"status":"ACTIVE"}`
+	patchResp := `{"entity":{"id":"metric-4"}}`
+	updateSrv, updateCaps := fmeSequenceServer(t, []string{getResp, patchResp})
+
+	updateCtx := fmeTestCtx(t, updateSrv.URL)
+	updateCtx.Id = "metric-4"
+	updateCtx.Noun = "metric"
+	updateCtx.VerbHandler = updateCS.VerbHandler
+	updateCtx.Resolver = reg
+	updateCtx.FormatFlags.Format = "json"
+	updateCtx.SetArgs = map[string]string{"trigger_event_type": "signed-up-again"}
+	if _, err := registry.RunEndpoint(updateCtx, updateCS.Endpoint); err != nil {
+		t.Fatalf("update RunEndpoint: %v", err)
+	}
+	var patchBody map[string]any
+	if err := json.Unmarshal((*updateCaps)[1].body, &patchBody); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	patchedTriggerEventType, ok := patchBody["triggerEventType"].(map[string]any)
+	if !ok || patchedTriggerEventType["eventTypeId"] != "signed-up-again" {
+		t.Fatalf("PATCH body[triggerEventType] = %v, want {eventTypeId: signed-up-again}", patchBody["triggerEventType"])
+	}
+	if _, present := patchBody["format"]; present {
+		t.Fatalf("PATCH body must not include %q (untouched field leaked): %v", "format", patchBody)
+	}
+}
+
 // TestFMESpec_UpdateMetric_ImmutableFields asserts --set name=/--set traffic_type=
 // are rejected: name/trafficType have no mutable_path on the metric noun, matching
 // the v4 API's immutability of both fields on PATCH.
