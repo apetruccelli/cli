@@ -1506,12 +1506,13 @@ func TestFMESpec_UpdateFeatureFlag_AddDelOwners(t *testing.T) {
 	}
 }
 
-// TestFMESpec_UpdateFeatureFlag_Owners_PreservedGroupHasNoIdentifier asserts that
-// touching owners while an existing GROUP owner is present (carried from the GET,
-// which never returns a group's identifier — only its name) fails clearly instead
-// of silently dropping the group or sending a broken request (FME-17257,
-// docs/mutation.md's documented owners/groups limitation).
-func TestFMESpec_UpdateFeatureFlag_Owners_PreservedGroupHasNoIdentifier(t *testing.T) {
+// TestFMESpec_UpdateFeatureFlag_Owners_PreservedGroupRoundTrips asserts that an
+// existing GROUP owner picked up from a GET — whose read shape carries the
+// group's identifier under "id" (Harness user groups have no separate UUID;
+// their identifier is their id) — is correctly re-encoded as {type: GROUP,
+// identifier} when preserved across an unrelated owners edit, instead of
+// being dropped or erroring (FME-17257; verified live against qa0).
+func TestFMESpec_UpdateFeatureFlag_Owners_PreservedGroupRoundTrips(t *testing.T) {
 	reg := registry.New()
 	fme.ModuleInit(reg.Module("fme"))
 	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
@@ -1524,8 +1525,8 @@ func TestFMESpec_UpdateFeatureFlag_Owners_PreservedGroupHasNoIdentifier(t *testi
 
 	getResp := `{"name":"my-flag","description":"old desc","trafficType":{"name":"user"},"status":"ACTIVE",` +
 		`"rolloutStatus":{"name":"Ramp"},"tags":[],` +
-		`"owners":[{"id":"g1","type":"GROUP","name":"platform-team"}],"createdAt":"2026-01-01T00:00:00Z"}`
-	srv, _ := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"my-flag"}}`})
+		`"owners":[{"id":"platform-team","type":"GROUP","name":"platform-team"}],"createdAt":"2026-01-01T00:00:00Z"}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"my-flag"}}`})
 
 	ctx := fmeTestCtx(t, srv.URL)
 	ctx.Id = "my-flag"
@@ -1537,12 +1538,21 @@ func TestFMESpec_UpdateFeatureFlag_Owners_PreservedGroupHasNoIdentifier(t *testi
 		{Kind: cmdctx.MutationAdd, Key: "owners.user:bob@example.com", Raw: "owners.user:bob@example.com"},
 	}
 
-	_, err := registry.RunEndpoint(ctx, cs.Endpoint)
-	if err == nil {
-		t.Fatal("RunEndpoint: want error preserving an existing group owner with no identifier, got nil")
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
 	}
-	if !strings.Contains(err.Error(), "platform-team") {
-		t.Fatalf("error = %v, want it to name the unwritable group owner", err)
+
+	var body map[string]any
+	if err := json.Unmarshal((*caps)[len(*caps)-1].body, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	owners, _ := body["owners"].([]any)
+	if len(owners) != 2 {
+		t.Fatalf("owners = %v, want 2 entries (preserved group + added user)", owners)
+	}
+	group, ok := owners[0].(map[string]any)
+	if !ok || group["type"] != "GROUP" || group["identifier"] != "platform-team" {
+		t.Fatalf("owners[0] = %v, want {type: GROUP, identifier: platform-team}", owners[0])
 	}
 }
 

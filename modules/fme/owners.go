@@ -17,12 +17,10 @@ import (
 // only for USER owners whose account has one resolved). The write shape
 // (POST/PATCH) is [{type: USER, id|email}] or [{type: GROUP, identifier}].
 //
-// USER owners round-trip cleanly on id. GROUP owners do not: v4's read side
-// returns a group's name but never its identifier, so an existing GROUP
-// owner picked up from a GET cannot be re-encoded for a write. This is a
-// known limitation (see docs/mutation.md) until the server returns the
-// identifier; encodeOwners surfaces it as an error rather than silently
-// dropping the group or sending a broken request.
+// For GROUP owners, the read side's "id" field carries the same value the
+// write side calls "identifier" (Harness user groups have no separate
+// UUID — their identifier is their id). encodeOwners renames it back on the
+// way out; it only errors if a GROUP entry has neither.
 var ownersFieldType = cmdctx.FieldTypeHandler{
 	Normalize: normalizeOwners,
 	Mutate:    mutateOwners,
@@ -87,8 +85,11 @@ func ownerMatches(entry map[string]any, op ownerOperand) bool {
 			return false
 		}
 		identifier, _ := entry["identifier"].(string)
+		id, _ := entry["id"].(string)
 		name, _ := entry["name"].(string)
-		return (identifier != "" && identifier == op.identifier) || (name != "" && name == op.identifier)
+		return (identifier != "" && identifier == op.identifier) ||
+			(id != "" && id == op.identifier) ||
+			(name != "" && name == op.identifier)
 	}
 	if !strings.EqualFold(entryType, "USER") {
 		return false
@@ -184,11 +185,10 @@ func encodeOwners(_ spec.FieldDef, current any) (any, error) {
 		case "GROUP":
 			identifier, _ := entry["identifier"].(string)
 			if identifier == "" {
-				name, _ := entry["name"].(string)
-				return nil, fmt.Errorf(
-					"owners: cannot write back existing group owner %q: v4 does not return the group identifier needed to re-send it (see docs/mutation.md); remove it with --del owners.group:%s, or drop and re-add it with --add owners.group:<identifier>",
-					name, name,
-				)
+				identifier, _ = entry["id"].(string)
+			}
+			if identifier == "" {
+				return nil, fmt.Errorf("owners: group owner %q has no identifier", entry["name"])
 			}
 			encoded = append(encoded, map[string]any{"type": "GROUP", "identifier": identifier})
 		default:
