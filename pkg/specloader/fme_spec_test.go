@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -2301,6 +2302,110 @@ func TestFMESpec_UpdateExperiment(t *testing.T) {
 	keyMetrics, ok := body["keyMetrics"].([]any)
 	if !ok || len(keyMetrics) != 2 || keyMetrics[0] != "m1" || keyMetrics[1] != "m2" {
 		t.Fatalf("PATCH body keyMetrics = %v, want [m1 m2] (display name dropped, m2 added)", body["keyMetrics"])
+	}
+}
+
+func TestFMESpec_ListExperiment_TagFilter(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("list", "experiment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("list experiment: command not found or missing endpoint spec")
+	}
+
+	resp := `{"data":[{"name":"exp-1","parent":{"type":"FEATURE_FLAG","name":"my-flag"}}],"totalCount":1}`
+	srv, path, query := fmeCaptureServerWithQuery(t, resp)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Noun = "experiment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{
+		"parent-type": "FEATURE_FLAG",
+		"parent-name": "my-flag",
+		"env":         "prod",
+		"tag":         []any{"my-tag"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if *path != "/fme/api/v4/experiments" {
+		t.Fatalf("path = %q, want /fme/api/v4/experiments", *path)
+	}
+	if !strings.Contains(*query, "tags=my-tag") {
+		t.Fatalf("query = %q, want tags=my-tag", *query)
+	}
+}
+
+// TestFMESpec_UpdateExperiment_Tags asserts --add/--del tags.<name> mutate the tags
+// collection correctly via the fme:tags field type (add appends {name}, del removes by name).
+func TestFMESpec_UpdateExperiment_Tags(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "experiment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update experiment: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"id":"e1","name":"exp-1","description":"old desc","hypothesis":"h",` +
+		`"parent":{"type":"FEATURE_FLAG","id":"f1","name":"my-flag"},` +
+		`"environment":{"id":"env1","name":"prod"},"startAt":"2026-01-01T00:00:00Z",` +
+		`"endAt":"2026-02-01T00:00:00Z","baselineTreatment":"off",` +
+		`"comparisonTreatments":["on"],"keyMetrics":[],` +
+		`"supportingMetrics":[],"owners":[],"status":"ACTIVE",` +
+		`"tags":[{"id":"t1","name":"keep-me"},{"id":"t2","name":"remove-me"}]}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"name":"exp-1"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "exp-1"
+	ctx.Noun = "experiment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationAdd, Key: "tags.new-tag", Raw: "tags.new-tag"},
+		{Kind: cmdctx.MutationDelete, Key: "tags.remove-me", Raw: "tags.remove-me"},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if len(*caps) != 2 {
+		t.Fatalf("got %d requests, want 2 (GET, PATCH)", len(*caps))
+	}
+	patch := (*caps)[1]
+	if patch.method != "PATCH" {
+		t.Fatalf("2nd request method = %q, want PATCH", patch.method)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	tags, ok := body["tags"].([]any)
+	if !ok || len(tags) != 2 {
+		t.Fatalf("PATCH body tags = %v, want 2 entries (keep-me, new-tag)", body["tags"])
+	}
+	names := make([]string, 0, len(tags))
+	for _, item := range tags {
+		m, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("tag entry = %v, want object", item)
+		}
+		if _, present := m["id"]; present {
+			t.Fatalf("tag entry %v leaked read-only field %q", m, "id")
+		}
+		names = append(names, m["name"].(string))
+	}
+	if !slices.Contains(names, "keep-me") || !slices.Contains(names, "new-tag") || slices.Contains(names, "remove-me") {
+		t.Fatalf("PATCH body tags names = %v, want [keep-me new-tag] (remove-me deleted)", names)
 	}
 }
 
