@@ -3506,3 +3506,319 @@ func TestFMESpec_UpdateExperiment_AddDelOwners(t *testing.T) {
 		t.Fatalf("owner entry = %v, want {type: USER, email: bob@example.com}", entry)
 	}
 }
+
+// ── experiment:settings ──────────────────────────────────────────────────────
+
+func TestFMESpec_GetExperimentSettings(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("get", "experiment:settings")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("get experiment:settings: command not found or missing endpoint spec")
+	}
+
+	srv, path := fmeCaptureServer(t, `{"id":"exp-1","source":"OVERRIDE","statisticalTestType":"BAYESIAN"}`)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "exp-1"
+	ctx.Noun = "experiment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if *path != "/fme/api/v4/experiments/exp-1/settings" {
+		t.Fatalf("path = %q, want /fme/api/v4/experiments/exp-1/settings", *path)
+	}
+}
+
+// TestFMESpec_UpdateExperimentSettings asserts the get-then-patch body is sparse (only the
+// --set field is sent, same as update experiment) and that id/source can never appear in it —
+// they carry no mutable_path, so no --set key can target them.
+func TestFMESpec_UpdateExperimentSettings(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "experiment:settings")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update experiment:settings: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"id":"exp-1","source":"OVERRIDE","statisticalTestType":"BAYESIAN",` +
+		`"significanceThreshold":0.05,"multipleComparisonCorrection":"NONE",` +
+		`"minimumSampleSize":100,"reviewPeriod":"P7D","varianceReduction":{"method":"NONE"}}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"id":"exp-1"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "exp-1"
+	ctx.Noun = "experiment"
+	ctx.FieldsNoun = "experiment_settings"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationSet, Key: "significance_threshold", Value: "0.1", Raw: "significance_threshold=0.1", HasValue: true},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if len(*caps) != 2 {
+		t.Fatalf("got %d requests, want 2 (GET, PATCH)", len(*caps))
+	}
+	patch := (*caps)[1]
+	if patch.method != "PATCH" || patch.path != "/fme/api/v4/experiments/exp-1/settings" {
+		t.Fatalf("2nd request = %s %s, want PATCH /fme/api/v4/experiments/exp-1/settings", patch.method, patch.path)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	for _, leaked := range []string{"id", "source"} {
+		if _, present := body[leaked]; present {
+			t.Fatalf("PATCH body leaked read-only field %q: %v", leaked, body)
+		}
+	}
+	// mutateScalar (the default handler for fields with no field_type) always writes the raw
+	// --set string, with no int/float coercion — the same behavior trafficAllocation and
+	// isProduction already have elsewhere in this spec. Not fixed here; out of scope for this
+	// ticket, tracked as a framework-wide gap.
+	if body["significanceThreshold"] != "0.1" {
+		t.Fatalf("PATCH body[significanceThreshold] = %v, want the string %q", body["significanceThreshold"], "0.1")
+	}
+	if _, present := body["statisticalTestType"]; present {
+		t.Fatalf("PATCH body[statisticalTestType] = %v, want absent (sparse patch — only --set fields are sent)", body["statisticalTestType"])
+	}
+}
+
+func TestFMESpec_DeleteExperimentSettings(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "experiment:settings")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete experiment:settings: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "exp-1"
+	ctx.Noun = "experiment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	if got.method != "DELETE" || got.path != "/fme/api/v4/experiments/exp-1/settings" {
+		t.Fatalf("request = %s %s, want DELETE /fme/api/v4/experiments/exp-1/settings", got.method, got.path)
+	}
+}
+
+// ── experiment:alerts ────────────────────────────────────────────────────────
+
+func TestFMESpec_GetExperimentAlerts(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("get", "experiment:alerts")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("get experiment:alerts: command not found or missing endpoint spec")
+	}
+
+	srv, path := fmeCaptureServer(t, `{"id":"exp-1","isEnabled":true}`)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "exp-1"
+	ctx.Noun = "experiment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if *path != "/fme/api/v4/experiments/exp-1/alerting" {
+		t.Fatalf("path = %q, want /fme/api/v4/experiments/exp-1/alerting", *path)
+	}
+}
+
+// TestFMESpec_UpdateExperimentAlerts_NoSet documents a known gap: since isEnabled is the
+// only mutable field and the get-then-patch body is sparse (only --set fields are sent, same
+// as update experiment), running this command with no --set at all sends an empty patch —
+// which the real v4 endpoint rejects with 400, since isEnabled may never be omitted there.
+// There is no client-side guard against this today; every real invocation is expected to
+// pass --set is_enabled=..., matching this command's --short example.
+func TestFMESpec_UpdateExperimentAlerts_NoSet(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "experiment:alerts")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update experiment:alerts: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"id":"exp-1","isEnabled":true}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"id":"exp-1"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "exp-1"
+	ctx.Noun = "experiment"
+	ctx.FieldsNoun = "experiment_alerts"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.MutationOrderCaptured = true
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if _, present := body["isEnabled"]; present {
+		t.Fatalf("PATCH body[isEnabled] = %v, want absent (sparse patch, no --set passed)", body["isEnabled"])
+	}
+}
+
+func TestFMESpec_UpdateExperimentAlerts_Set(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "experiment:alerts")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update experiment:alerts: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"id":"exp-1","isEnabled":false}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"id":"exp-1"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "exp-1"
+	ctx.Noun = "experiment"
+	ctx.FieldsNoun = "experiment_alerts"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.MutationOrderCaptured = true
+	ctx.MutationFlags = []cmdctx.FieldMutation{
+		{Kind: cmdctx.MutationSet, Key: "is_enabled", Value: "true", Raw: "is_enabled=true", HasValue: true},
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	patch := (*caps)[1]
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	// mutateScalar writes the raw --set string, with no bool coercion — see the comment on
+	// TestFMESpec_UpdateExperimentSettings.
+	if body["isEnabled"] != "true" {
+		t.Fatalf("PATCH body[isEnabled] = %v, want the string %q", body["isEnabled"], "true")
+	}
+}
+
+// ── experiment:results ───────────────────────────────────────────────────────
+
+// TestFMESpec_ListExperimentResults asserts the parent-id arg maps to the experiment-id
+// path segment, null-valued numeric fields render as "" (not "<nil>"), and metric_id.name
+// resolves into the Metric Name column.
+func TestFMESpec_ListExperimentResults(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("list", "experiment:results")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("list experiment:results: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"data":[` +
+		`{"metricId":{"id":"m1","name":"Conversion Rate"},"category":"KEY","comparison":"on",` +
+		`"positive":true,"value":0.12,"errorMargin":0.02,"pvalue":0.03,"metricResultState":"OK",` +
+		`"impactLower":0.01,"impactUpper":0.2,"baselineMean":0.5,"comparisonMean":0.56,` +
+		`"baselineSampleSize":1000,"comparisonSampleSize":1010},` +
+		`{"metricId":{"id":"m2","name":"Guardrail Latency"},"category":"GUARDRAIL","comparison":"on",` +
+		`"positive":false,"value":null,"errorMargin":null,"pvalue":null,"metricResultState":"NOT_ENOUGH_DATA",` +
+		`"impactLower":null,"impactUpper":null,"baselineMean":null,"comparisonMean":null,` +
+		`"baselineSampleSize":null,"comparisonSampleSize":null}` +
+		`],"calculatedAt":null}`
+	srv, path, query := fmeCaptureServerWithQuery(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Noun = "experiment"
+	ctx.ParentId = "exp-1"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+
+	if err := registry.RunListEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunListEndpoint: %v", err)
+	}
+
+	if *path != "/fme/api/v4/experiments/exp-1/metric-results" {
+		t.Fatalf("path = %q, want /fme/api/v4/experiments/exp-1/metric-results", *path)
+	}
+	if strings.Contains(*query, "metric_ids=") {
+		t.Fatalf("query = %q, want no metric_ids param when --metric-id not passed", *query)
+	}
+
+	body := fmeReadOut(t, ctx)
+	for _, want := range []string{"Conversion Rate", "Guardrail Latency", "NOT_ENOUGH_DATA"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("output missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "<nil>") {
+		t.Fatalf("output contains literal <nil> for a null numeric field: %s", body)
+	}
+}
+
+// TestFMESpec_ListExperimentResults_MetricIdFilter asserts --metric-id maps to the
+// metric_ids query param (ResultsResource's only supported filter).
+func TestFMESpec_ListExperimentResults_MetricIdFilter(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("list", "experiment:results")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("list experiment:results: command not found or missing endpoint spec")
+	}
+
+	srv, _, query := fmeCaptureServerWithQuery(t, `{"data":[]}`)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Noun = "experiment"
+	ctx.ParentId = "exp-1"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"metric-id": "m1"}
+
+	if err := registry.RunListEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunListEndpoint: %v", err)
+	}
+
+	if !strings.Contains(*query, "metric_ids=m1") {
+		t.Fatalf("query = %q, want metric_ids=m1", *query)
+	}
+}
