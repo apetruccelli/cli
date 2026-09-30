@@ -307,6 +307,10 @@ nouns:
         expr: join(map(it.supportingMetrics, {#.name}), ", ")
         mutable_path: supportingMetrics
         field_type: fme:metric_refs
+      - id: tags
+        expr: join(map(it.tags, {#.name}), ", ")
+        mutable_path: tags
+        field_type: fme:tags
       - id: owners
         expr: join(map(it.owners, {#.name}), ", ")
         mutable_path: owners
@@ -1389,6 +1393,9 @@ commands:
       - name: status
         description: "Filter by status (single value; the API defaults to ACTIVE if omitted): ACTIVE, PAUSED, ARCHIVED, COMPLETED"
         completion_values: [ACTIVE, PAUSED, ARCHIVED, COMPLETED]
+      - name: tag
+        description: Filter by tag name (repeatable in the API; the CLI sends one value)
+        is_multi: true
     endpoint:
       path: /fme/api/v4/experiments
       items_expr: it.data
@@ -1403,6 +1410,7 @@ commands:
         environment_id: flags.env
         name: flags.search
         status: flags.status
+        tags: flags.tag[0]
       paging:
         paging_strategy: offset_limit
         page_index_param: offset
@@ -1507,7 +1515,7 @@ commands:
       # writable fields the GET carries; the PATCH is an RFC 7396 merge patch, so anything
       # omitted is left untouched. keyMetrics/supportingMetrics/owners are picked (not just
       # the scalars) so --add/--del can preserve the other members of those collections.
-      update_body_pick: "{description: it.description, hypothesis: it.hypothesis, startAt: it.startAt, endAt: it.endAt, baselineTreatment: it.baselineTreatment, comparisonTreatments: it.comparisonTreatments, keyMetrics: it.keyMetrics, supportingMetrics: it.supportingMetrics, owners: it.owners, status: it.status}"
+      update_body_pick: "{description: it.description, hypothesis: it.hypothesis, startAt: it.startAt, endAt: it.endAt, baselineTreatment: it.baselineTreatment, comparisonTreatments: it.comparisonTreatments, keyMetrics: it.keyMetrics, supportingMetrics: it.supportingMetrics, tags: it.tags, owners: it.owners, status: it.status}"
       update_body_wrap: ""
       query_params:
         account_id: auth.account
