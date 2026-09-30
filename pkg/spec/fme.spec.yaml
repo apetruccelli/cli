@@ -86,6 +86,53 @@ nouns:
         expr: epochMs(it.createdAt * 1000)
         field_type: ts
 
+  - noun: metric
+    short_desc: A Harness FME metric definition (addressed by id, not name).
+    noun_aliases: [metrics]
+    fields:
+      - id: id
+        expr: it.id
+      - id: name
+        expr: it.name
+      - id: description
+        expr: it.description ?? ""
+        mutable_path: description
+        width_max: 60
+      - id: traffic_type
+        label: Traffic Type
+        expr: it.trafficType.name
+      - id: format
+        expr: it.format
+        mutable_path: format
+      - id: aggregation
+        expr: it.aggregation
+        mutable_path: aggregation
+      - id: is_positive
+        label: Positive
+        expr: string(it.isPositive)
+        mutable_path: isPositive
+      - id: spread
+        expr: it.spread ?? ""
+        mutable_path: spread
+      - id: base_event_types
+        label: Base Event Types
+        expr: join(map(it.baseEventTypes, {#.eventTypeId}), ", ")
+      - id: filter_event_type
+        label: Filter Event Type
+        expr: 'it.filterEventType == nil ? "" : it.filterEventType.eventTypeId'
+      - id: tags
+        expr: join(map(it.tags, {#.name}), ", ")
+      - id: owners
+        expr: join(map(it.owners, {#.name}), ", ")
+      - id: status
+        expr: it.status
+      - id: created
+        expr: epochMs(it.createdAt * 1000)
+        field_type: ts
+      - id: modified
+        expr: epochMs(it.modifiedAt * 1000)
+        field_type: ts
+
   - noun: traffic_type
     short_desc: Harness FME traffic type (read-only lookup).
     fields:
@@ -93,6 +140,18 @@ nouns:
         expr: it.id
       - id: name
         expr: it.name
+
+  # An event type has no name or description by design: the events pipeline records neither,
+  # so the id *is* the event name. Only event types with events in the last 30 days are visible.
+  - noun: event_type
+    short_desc: A Harness FME event type (read-only lookup for a metric's event types).
+    noun_aliases: [event_types]
+    fields:
+      - id: id
+        expr: it.id
+      - id: traffic_types
+        label: Traffic Types
+        expr: join(map(it.trafficTypes, {#.name}), ", ")
 
   - noun: rollout_status
     short_desc: Harness FME rollout status (read-only lookup).
@@ -926,6 +985,191 @@ commands:
         organization_identifier: auth.org
         project_identifier: auth.project
         environment_id: flags.env
+
+  # ── metric ────────────────────────────────────────────────────────────────────
+  # tags/owners are read-only here: the object_set field type needed for incremental
+  # --set/--del mutation of them is still under discussion in cli#244. Once that lands,
+  # update metric can pick them up without changing this command's other behavior.
+
+  - command: list metric
+    verb: list
+    noun: metric
+    short: List metrics
+    handler_type: endpoint
+    flags:
+      - name: name
+        description: Filter by name (partial match)
+      - name: traffic-type-id
+        description: Filter by traffic type id
+      - name: event-type-id
+        description: Filter by base event type id (repeatable in the API; the CLI sends one value)
+        is_multi: true
+      - name: tag
+        description: Filter by tag name (repeatable in the API; the CLI sends one value)
+        is_multi: true
+      - name: id
+        description: Filter to specific metric ids (repeatable in the API; the CLI sends one value)
+        is_multi: true
+      - name: sort-order
+        description: "Sort direction by name: ASCENDING (default) or DESCENDING"
+        completion_values: [ASCENDING, DESCENDING]
+    endpoint:
+      path: /fme/api/v4/metrics
+      items_expr: it.data
+      item_item_expr: it
+      get_id_expr: it.id
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+        name: flags.name
+        traffic_type_id: flags["traffic-type-id"]
+        event_type_ids: 'flags["event-type-id"][0]'
+        tags: flags.tag[0]
+        ids: flags.id[0]
+        sort_order: flags["sort-order"]
+      paging:
+        paging_strategy: offset_limit
+        page_index_param: offset
+        page_size_param: limit
+        page_size_default: 100
+        page_size_max: 100
+        total_expr: it.totalCount
+        countable: true
+      columns: [id, name, traffic_type, format, aggregation, status]
+
+  - command: get metric
+    verb: get
+    noun: metric
+    short: "Get a metric by id: harness get metric <metric-id>"
+    handler_type: endpoint
+    endpoint:
+      path: /fme/api/v4/metrics/{{ctx.id}}
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+      item_expr: it
+      yaml_pick_expr: it
+
+  - command: create metric
+    verb: create
+    noun: metric
+    short: "Create a metric: harness create metric <name> --traffic-type user --event-type signup --set format=NUMBER --set aggregation=COUNT --set isPositive=true"
+    handler_type: endpoint
+    flags:
+      - name: traffic-type
+        description: Traffic type for the metric (e.g. user, account)
+        required: true
+      - name: event-type
+        description: Base event type id (repeatable; at least one is required)
+        is_multi: true
+        required: true
+    flags_builtin:
+      set: true
+    endpoint:
+      method: POST
+      path: /fme/api/v4/metrics
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+      create_strategy: set-fields
+      create_body_init:
+        name: ctx.id
+        trafficType: flags["traffic-type"]
+        baseEventTypes: 'map(flags["event-type"], ({eventTypeId: #}))'
+      create_body_wrap: ""
+      item_expr: it.entity
+      text_header: "\nCreated metric {{it.name}}\n"
+
+  - command: update metric
+    verb: update
+    noun: metric
+    short: "Update a metric: harness update metric <metric-id> --set description=foo"
+    handler_type: endpoint
+    flags_builtin:
+      set: true
+      del: true
+    endpoint:
+      method: PATCH
+      path: /fme/api/v4/metrics/{{ctx.id}}
+      get_path: /fme/api/v4/metrics/{{ctx.id}}
+      update_strategy: get-then-patch
+      # Deliberately narrow: name/trafficType are immutable (rejected by the API), and
+      # baseEventTypes/filterEventType/tags/owners/cap are left out of this pick so a scalar
+      # edit here can never silently resend or clear them as part of the merge-patch body.
+      update_body_pick: "{description: it.description, format: it.format, aggregation: it.aggregation, isPositive: it.isPositive, spread: it.spread}"
+      update_body_wrap: ""
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+      item_expr: it.entity
+      text_header: "\nUpdated metric {{ctx.id}}\n"
+
+  - command: delete metric
+    verb: delete
+    noun: metric
+    confirm_mode: prompt
+    short: "Delete a metric by id (hard delete, no archive/restore): harness delete metric <metric-id>"
+    handler_type: endpoint
+    endpoint:
+      method: DELETE
+      path: /fme/api/v4/metrics/{{ctx.id}}
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+
+  # ── event_type ───────────────────────────────────────────────────────────────
+  # Read-only lookup: discovers valid event type ids for metric's --event-type /
+  # base_event_types before they're referenced on create.
+
+  - command: list event_type
+    verb: list
+    noun: event_type
+    short: List FME event types
+    handler_type: endpoint
+    flags:
+      - name: name
+        description: Filter by name (partial match)
+      - name: traffic-type
+        description: Filter by traffic type, as an id or name
+    endpoint:
+      path: /fme/api/v4/event-types
+      items_expr: it.data
+      item_item_expr: it
+      get_id_expr: it.id
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+        name: flags.name
+        traffic_type: flags["traffic-type"]
+      paging:
+        paging_strategy: offset_limit
+        page_index_param: offset
+        page_size_param: limit
+        page_size_default: 100
+        page_size_max: 100
+        total_expr: it.totalCount
+        countable: true
+      columns: [id, traffic_types]
+
+  - command: get event_type
+    verb: get
+    noun: event_type
+    short: "Get an event type by id: harness get event_type <event-type-id>"
+    handler_type: endpoint
+    endpoint:
+      path: /fme/api/v4/event-types/{{ctx.id}}
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+      item_expr: it
+      yaml_pick_expr: it
 
   # ── traffic_type ──────────────────────────────────────────────────────────────
 

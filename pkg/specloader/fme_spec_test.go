@@ -2110,3 +2110,360 @@ func TestFMESpec_UpdateFeatureFlagDefinition_AddDelFlagSets(t *testing.T) {
 		}
 	}
 }
+
+func TestFMESpec_ListMetrics(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("list", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("list metric: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"data":[{"id":"metric-1","name":"my-metric","trafficType":{"name":"user"},"format":"NUMBER","aggregation":"COUNT","status":"ACTIVE"}],"limit":100,"offset":0,"totalCount":1}`
+	srv, path, query := fmeCaptureServerWithQuery(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Noun = "metric"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{
+		"name":            "my-metric",
+		"traffic-type-id": "tt-1",
+		"event-type-id":   []string{"et-1", "et-2"},
+		"tag":             []string{"tag-a"},
+		"id":              []string{"metric-1"},
+		"sort-order":      "DESCENDING",
+	}
+
+	if err := registry.RunListEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunListEndpoint: %v", err)
+	}
+
+	if !strings.HasPrefix(*path, "/fme/api/v4/metrics") {
+		t.Fatalf("request path = %q, want prefix /fme/api/v4/metrics", *path)
+	}
+	for _, want := range []string{"name=my-metric", "traffic_type_id=tt-1", "event_type_ids=et-1", "tags=tag-a", "ids=metric-1", "sort_order=DESCENDING"} {
+		if !strings.Contains(*query, want) {
+			t.Fatalf("query = %q, want %q", *query, want)
+		}
+	}
+	if strings.Contains(*query, "et-2") {
+		t.Fatalf("query = %q, event_type_ids must send only the first value, not the whole repeated slice", *query)
+	}
+
+	body := fmeReadOut(t, ctx)
+	for _, want := range []string{"metric-1", "my-metric", "user", "NUMBER", "COUNT", "ACTIVE"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("output missing %q: %s", want, body)
+		}
+	}
+}
+
+// TestFMESpec_GetMetric drives "get metric <id>" and asserts the path embeds the
+// id (metrics are addressed by id, not name, unlike feature_flag/segment) and that
+// tags/owners render their joined names in text format.
+func TestFMESpec_GetMetric(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("get", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("get metric: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"id":"metric-1","name":"my-metric","description":"desc","trafficType":{"name":"user"},"format":"NUMBER","aggregation":"COUNT","isPositive":true,"spread":"PER","baseEventTypes":[{"eventTypeId":"signup"}],"tags":[{"id":"t-1","name":"demo"}],"owners":[{"id":"u-1","name":"alice"}],"status":"ACTIVE","createdAt":"2026-01-01T00:00:00Z"}`
+	srv, path := fmeCaptureServer(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "metric-1"
+	ctx.Noun = "metric"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "text"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if *path != "/fme/api/v4/metrics/metric-1" {
+		t.Fatalf("request path = %q, want /fme/api/v4/metrics/metric-1", *path)
+	}
+
+	body := fmeReadOut(t, ctx)
+	for _, want := range []string{"my-metric", "signup", "demo", "alice"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("output missing %q: %s", want, body)
+		}
+	}
+}
+
+// TestFMESpec_CreateMetric drives "create metric <name> --traffic-type ... --event-type ..."
+// and asserts the POST body carries name/trafficType/baseEventTypes (the latter built from
+// a repeatable --event-type via map(flags["event-type"], {eventTypeId: #})), plus any --set
+// scalars, and that the response unwraps via item_expr: it.entity.
+func TestFMESpec_CreateMetric(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("create", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("create metric: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"entity":{"id":"metric-2","name":"new-metric","trafficType":{"name":"user"},"status":"ACTIVE"}}`
+	srv, caps := fmeSequenceServer(t, []string{fixture})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "new-metric"
+	ctx.Noun = "metric"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"traffic-type": "user", "event-type": []string{"signup"}}
+	ctx.SetArgs = map[string]string{"format": "NUMBER", "aggregation": "COUNT", "is_positive": "true"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if len(*caps) != 1 {
+		t.Fatalf("got %d requests, want 1", len(*caps))
+	}
+	got := (*caps)[0]
+	if got.method != "POST" || got.path != "/fme/api/v4/metrics" {
+		t.Fatalf("request = %s %s, want POST /fme/api/v4/metrics", got.method, got.path)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if body["name"] != "new-metric" || body["trafficType"] != "user" {
+		t.Fatalf("body = %v, want name=new-metric trafficType=user", body)
+	}
+	baseEventTypes, ok := body["baseEventTypes"].([]any)
+	if !ok || len(baseEventTypes) != 1 {
+		t.Fatalf("body[baseEventTypes] = %v, want one entry built from --event-type", body["baseEventTypes"])
+	}
+	entry, ok := baseEventTypes[0].(map[string]any)
+	if !ok || entry["eventTypeId"] != "signup" {
+		t.Fatalf("baseEventTypes[0] = %v, want {eventTypeId: signup}", baseEventTypes[0])
+	}
+	if body["format"] != "NUMBER" || body["aggregation"] != "COUNT" || body["isPositive"] != "true" {
+		t.Fatalf("body = %v, want --set scalars carried through", body)
+	}
+
+	out := fmeReadOut(t, ctx)
+	if !strings.Contains(out, "new-metric") {
+		t.Fatalf("output missing new-metric (item_expr it.entity did not unwrap): %s", out)
+	}
+}
+
+// TestFMESpec_UpdateMetric drives "update metric <id> --set description=..." and asserts
+// the get-then-patch PATCH body is curated to exactly the five mutable scalars
+// (description/format/aggregation/isPositive/spread) — explicitly NOT tags/owners/
+// baseEventTypes/cap, pinning the FME-19300 deferral until object_set (cli#244) lands.
+func TestFMESpec_UpdateMetric(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update metric: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"id":"metric-1","name":"my-metric","description":"old desc","trafficType":{"name":"user"},"format":"NUMBER","aggregation":"COUNT","isPositive":true,"spread":"PER","baseEventTypes":[{"eventTypeId":"signup"}],"tags":[{"id":"t-1","name":"demo"}],"owners":[{"id":"u-1","name":"alice"}],"status":"ACTIVE"}`
+	patchResp := `{"entity":{"id":"metric-1","description":"new desc"}}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, patchResp})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "metric-1"
+	ctx.Noun = "metric"
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.SetArgs = map[string]string{"description": "new desc"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if len(*caps) != 2 {
+		t.Fatalf("got %d requests, want 2 (GET, PATCH)", len(*caps))
+	}
+	patch := (*caps)[1]
+	if patch.method != "PATCH" {
+		t.Fatalf("2nd request method = %q, want PATCH", patch.method)
+	}
+	if patch.path != "/fme/api/v4/metrics/metric-1" {
+		t.Fatalf("2nd request path = %q, want /fme/api/v4/metrics/metric-1", patch.path)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	wantKeys := map[string]any{"description": "new desc"}
+	if len(body) != len(wantKeys) {
+		t.Fatalf("PATCH body = %v, want exactly %v", body, wantKeys)
+	}
+	for k, v := range wantKeys {
+		if body[k] != v {
+			t.Fatalf("PATCH body[%s] = %v, want %v (full body: %v)", k, body[k], v, body)
+		}
+	}
+	for _, leaked := range []string{"format", "aggregation", "isPositive", "spread", "tags", "owners", "baseEventTypes", "name", "trafficType", "id", "status"} {
+		if _, present := body[leaked]; present {
+			t.Fatalf("PATCH body must not include %q (deferred/immutable field leaked): %v", leaked, body)
+		}
+	}
+}
+
+// TestFMESpec_UpdateMetric_ImmutableFields asserts --set name=/--set traffic_type=
+// are rejected: name/trafficType have no mutable_path on the metric noun, matching
+// the v4 API's immutability of both fields on PATCH.
+func TestFMESpec_UpdateMetric_ImmutableFields(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update metric: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"id":"metric-1","name":"my-metric","trafficType":{"name":"user"},"format":"NUMBER"}`
+
+	for _, field := range []string{"name", "traffic_type"} {
+		t.Run(field, func(t *testing.T) {
+			srv, _ := fmeSequenceServer(t, []string{getResp, `{"entity":{}}`})
+
+			ctx := fmeTestCtx(t, srv.URL)
+			ctx.Id = "metric-1"
+			ctx.Noun = "metric"
+			ctx.VerbHandler = cs.VerbHandler
+			ctx.Resolver = reg
+			ctx.FormatFlags.Format = "json"
+			ctx.SetArgs = map[string]string{field: "new-value"}
+
+			_, err := registry.RunEndpoint(ctx, cs.Endpoint)
+			if err == nil {
+				t.Fatalf("--set %s=...: want error (immutable field), got nil", field)
+			}
+			if !strings.Contains(err.Error(), field) {
+				t.Fatalf("error = %q, want it to mention %q", err.Error(), field)
+			}
+		})
+	}
+}
+
+// TestFMESpec_DeleteMetric drives "delete metric <id>" (hard delete, no
+// archive/restore) and asserts the DELETE request hits the {id} path.
+func TestFMESpec_DeleteMetric(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "metric")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete metric: command not found or missing endpoint spec")
+	}
+
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"governance":{"result":"ok"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "metric-1"
+	ctx.Noun = "metric"
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method = %q, want DELETE", gotMethod)
+	}
+	if gotPath != "/fme/api/v4/metrics/metric-1" {
+		t.Fatalf("request path = %q, want /fme/api/v4/metrics/metric-1", gotPath)
+	}
+}
+
+// TestFMESpec_ListEventTypes drives "list event_type" and asserts the filters map
+// to their query params and traffic_types renders as joined names.
+func TestFMESpec_ListEventTypes(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("list", "event_type")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("list event_type: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"data":[{"id":"signup","trafficTypes":[{"name":"user"},{"name":"account"}]}],"limit":100,"offset":0,"totalCount":1}`
+	srv, path, query := fmeCaptureServerWithQuery(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Noun = "event_type"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"name": "sign", "traffic-type": "user"}
+
+	if err := registry.RunListEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunListEndpoint: %v", err)
+	}
+
+	if !strings.HasPrefix(*path, "/fme/api/v4/event-types") {
+		t.Fatalf("request path = %q, want prefix /fme/api/v4/event-types", *path)
+	}
+	if !strings.Contains(*query, "name=sign") || !strings.Contains(*query, "traffic_type=user") {
+		t.Fatalf("query = %q, want name=sign and traffic_type=user", *query)
+	}
+
+	body := fmeReadOut(t, ctx)
+	for _, want := range []string{"signup", "user", "account"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("output missing %q: %s", want, body)
+		}
+	}
+}
+
+// TestFMESpec_GetEventType drives "get event_type <id>" and asserts the path
+// embeds the id (event types are addressed by id, which doubles as the name).
+func TestFMESpec_GetEventType(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("get", "event_type")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("get event_type: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"id":"signup","trafficTypes":[{"name":"user"}]}`
+	srv, path := fmeCaptureServer(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "signup"
+	ctx.Noun = "event_type"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "yaml"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if *path != "/fme/api/v4/event-types/signup" {
+		t.Fatalf("request path = %q, want /fme/api/v4/event-types/signup", *path)
+	}
+}
