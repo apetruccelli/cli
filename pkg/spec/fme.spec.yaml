@@ -468,6 +468,8 @@ commands:
         required: true
       - name: comment
         description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: POST
       path: /fme/api/v4/feature-flag-definitions/{{ctx.id}}/kill
@@ -478,6 +480,7 @@ commands:
         environment_id: flags.env
       body_params:
         comment: flags.comment
+        title: flags.title
       item_expr: it.entity
       text_header: "\nKilled feature flag {{ctx.id}} in {{flags.env}}\n"
 
@@ -494,6 +497,8 @@ commands:
         required: true
       - name: comment
         description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: POST
       path: /fme/api/v4/feature-flag-definitions/{{ctx.id}}/restore
@@ -504,6 +509,7 @@ commands:
         environment_id: flags.env
       body_params:
         comment: flags.comment
+        title: flags.title
       item_expr: it.entity
       text_header: "\nRestored feature flag {{ctx.id}} in {{flags.env}}\n"
 
@@ -520,6 +526,8 @@ commands:
         required: true
       - name: comment
         description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: POST
       path: /fme/api/v4/feature-flag-definitions/{{ctx.id}}/reallocate
@@ -530,6 +538,7 @@ commands:
         environment_id: flags.env
       body_params:
         comment: flags.comment
+        title: flags.title
       item_expr: it.entity
       text_header: "\nReallocated traffic for {{ctx.id}} in {{flags.env}}\n"
 

@@ -1095,6 +1095,57 @@ func TestFMESpec_DeleteFeatureFlagDefinition(t *testing.T) {
 	}
 }
 
+// TestFMESpec_ExecuteFeatureFlagKill_AuditFields asserts --comment/--title reach the POST
+// body for "execute feature_flag:kill", and that an unset title is omitted rather than sent
+// as an empty string.
+func TestFMESpec_ExecuteFeatureFlagKill_AuditFields(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("execute", "feature_flag:kill")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("execute feature_flag:kill: command not found or missing endpoint spec")
+	}
+
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"entity":`+gotBody+`}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "cli-test-flag"
+	ctx.Noun = "feature_flag"
+	ctx.VerbHandler = cs.VerbHandler
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1", "comment": "audit note", "title": "my title"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	for _, want := range []string{`"comment":"audit note"`, `"title":"my title"`} {
+		if !strings.Contains(gotBody, want) {
+			t.Fatalf("POST body missing %s: %s", want, gotBody)
+		}
+	}
+
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+	for _, absent := range []string{`"comment"`, `"title"`} {
+		if strings.Contains(gotBody, absent) {
+			t.Fatalf("POST body contains %s though neither flag was passed: %s", absent, gotBody)
+		}
+	}
+}
+
 // fmeCaptured records one request's method/path/query/body — used by
 // fmeSequenceServer for multi-request flows (e.g. get-then-patch update).
 type fmeCaptured struct {
