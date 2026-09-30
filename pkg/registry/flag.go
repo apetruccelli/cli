@@ -129,7 +129,9 @@ var coreFlagTable = []CoreFlag{
 	{Name: "ui", Bool: true},
 	{Name: "force", Bool: true},
 	{Name: "set"},
+	{Name: "add"},
 	{Name: "del"},
+	{Name: "preview-request", Bool: true},
 	{Name: "from"},
 	{Name: "to"},
 }

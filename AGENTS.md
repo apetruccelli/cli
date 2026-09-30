@@ -123,6 +123,8 @@ noun_variant: type      # → cobra command "kg:type"
 
 ### Mutable fields and update commands
 
+For custom field types, ordered `--set`/`--add`/`--del`, and sparse PATCH versus full PUT bodies, see [docs/mutation.md](docs/mutation.md). Read it before adding FME collection handlers or changing mutation specs.
+
 Fields with `mutable_path` are writable via `--set`/`--del` on update commands. `mutable_path` is a dot-path **relative to the `update_body_pick` subtree** — never starts with `it.`:
 
 ```yaml
@@ -139,6 +141,7 @@ update_body_wrap: project           # re-wraps the mutated object in PUT body
 
 Rules:
 - `update_body_pick` should match `yaml_pick_expr` on the corresponding `get` command — they describe the same subtree.
+- For get-then-PUT, pick the full resource subtree rather than enumerating today's fields: a positive field list can silently drop new API fields on PUT. PATCH may intentionally select only fields it sends.
 - Fields without `mutable_path` are read-only and do not appear in `--list-fields`.
 - `mutable_path` must not start with `it.` — the spec validator will reject it.
 
@@ -229,6 +232,13 @@ harness list pr_activity <repo_id>/<pr_number>
 ```
 
 The CLI reads auth from the active profile (typically `~/.harness/profiles.yaml`).
+For endpoint-backed create/update/execute commands, append the hidden `--preview-request` flag to inspect the assembled URL and body without sending the write (an update may still perform a preparatory GET).
+
+## Test selection
+
+Add tests for behavior with a plausible, non-obvious failure mode: interacting operations, ordering, branching rules, boundary cases, error handling, and exact request-body transformations. Prefer compact direct/table tests at the layer that owns that logic; run existing suites for the rest.
+
+Do not add tests for mechanical pass-through or framework guarantees (e.g. Cobra accepting a registered flag, a loop forwarding an element, or a handler receiving an operation explicitly supplied by the test). Do not build mock commands or HTTP servers just to reassert a body shape already covered by a direct mutation test. If you cannot name a realistic mistake the test would catch, omit it; redundant tests add maintenance and context cost.
 
 ## Current spec files
 

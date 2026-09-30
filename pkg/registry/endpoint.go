@@ -600,11 +600,19 @@ func evalBodyParams(ctx *cmdctx.Ctx, exprs map[string]string) map[string]any {
 // nil are skipped rather than written as null: a caller that omitted the flag wants the key
 // absent, and under a merge patch null means "delete this field".
 func mergeBodyParams(env map[string]any, dst map[string]any, exprs map[string]string) {
+	for dotPath, result := range evalBodyParamValues(env, exprs) {
+		setDotPath(dst, dotPath, result)
+	}
+}
+
+func evalBodyParamValues(env map[string]any, exprs map[string]string) map[string]any {
+	values := make(map[string]any)
 	for dotPath, exprStr := range exprs {
 		if result, ok := exprenv.EvalExprAny(env, exprStr); ok && result != nil {
-			setDotPath(dst, dotPath, result)
+			values[dotPath] = result
 		}
 	}
+	return values
 }
 
 // parseArrayFlag parses a string flag value as []string.
@@ -780,37 +788,15 @@ func runGetThenUpdate(ctx *cmdctx.Ctx, ep *spec.EndpointSpec, c *client.Client, 
 		}
 	}
 
-	// Round-trip through JSON to get a map[string]any we can mutate.
-	b, err := json.Marshal(item)
+	base, err := jsonCopyMap(item)
 	if err != nil {
-		return nil, fmt.Errorf("get-then-%s: marshaling picked item: %w", strings.ToLower(method), err)
-	}
-	var mutable map[string]any
-	if err := json.Unmarshal(b, &mutable); err != nil {
-		return nil, fmt.Errorf("get-then-%s: unmarshaling picked item: %w", strings.ToLower(method), err)
+		return nil, fmt.Errorf("get-then-%s: copying picked item: %w", strings.ToLower(method), err)
 	}
 
-	// Build a fieldID→FieldDef map from the noun's mutable fields for --set/--del resolution.
-	fieldPaths := map[string]spec.FieldDef{}
-	for _, f := range MutableFields(resolveNounDef(ctx)) {
-		fieldPaths[f.ID] = f
-	}
-
-	if err := applyMutations(mutable, ctx.SetArgs, ctx.DelArgs, fieldPaths); err != nil {
+	body, err := mutationBodyForCtx(ctx, base, ep.UpdateBodyWrap, evalBodyParamValues(exprEnv, ep.BodyParams), ep.UpdateBodyPick != "", method == "PATCH")
+	if err != nil {
 		return nil, err
 	}
-
-	body := mutable
-	if ep.UpdateBodyWrap != "" {
-		body = map[string]any{ep.UpdateBodyWrap: mutable}
-	}
-
-	// body_params supply fields the GET cannot: write-only ones the API accepts but never
-	// returns, such as audit metadata. They are merged after the wrap, so they land
-	// alongside the wrapped subtree rather than inside it. An expression evaluating to nil
-	// contributes no key, which matters for PATCH: an explicit null is a merge-patch
-	// instruction to delete the field, not to leave it alone.
-	mergeBodyParams(exprEnv, body, ep.BodyParams)
 
 	var updateBody any = body
 	updateQP := evalQueryParams(ctx, ep.QueryParams, true)
@@ -870,9 +856,30 @@ func runGetThenPutKV(ctx *cmdctx.Ctx, ep *spec.EndpointSpec, c *client.Client, p
 		}
 	}
 
-	maps.Copy(kvMap, ctx.SetArgs)
-	for _, k := range ctx.DelArgs {
-		delete(kvMap, k)
+	if ctx.MutationOrderCaptured {
+		for _, op := range ctx.MutationFlags {
+			switch op.Kind {
+			case cmdctx.MutationSet:
+				kvMap[op.Key] = op.Value
+			case cmdctx.MutationDelete:
+				delete(kvMap, op.Raw)
+			case cmdctx.MutationAdd:
+				if !op.HasValue {
+					return nil, fmt.Errorf("--add %s: expected key=value", op.Key)
+				}
+				if existing, found := kvMap[op.Key]; found && existing != op.Value {
+					return nil, fmt.Errorf("--add %s: key already exists with a different value; use --set to overwrite it", op.Key)
+				}
+				kvMap[op.Key] = op.Value
+			default:
+				return nil, fmt.Errorf("unknown mutation operation %q", op.Kind)
+			}
+		}
+	} else {
+		maps.Copy(kvMap, ctx.SetArgs)
+		for _, k := range ctx.DelArgs {
+			delete(kvMap, k)
+		}
 	}
 
 	// Rebuild as [{key, value}, ...].
@@ -903,118 +910,47 @@ func runGetThenPutKV(ctx *cmdctx.Ctx, ep *spec.EndpointSpec, c *client.Client, p
 //  4. POST the result
 func runSetFields(ctx *cmdctx.Ctx, ep *spec.EndpointSpec, c *client.Client, path string) (any, error) {
 	exprEnv := exprenv.Make(ctx)
-	mutable := map[string]any{}
+	base := map[string]any{}
 
 	// Seed initial values from create_body_init (evaluated as exprs).
 	for dotPath, exprStr := range ep.CreateBodyInit {
 		if result, ok := exprenv.EvalExprAny(exprEnv, exprStr); ok {
-			setDotPath(mutable, dotPath, result)
+			setDotPath(base, dotPath, result)
 		}
 	}
 
-	// Build fieldID→FieldDef map from the noun's mutable fields.
-	fieldPaths := map[string]spec.FieldDef{}
-	for _, f := range MutableFields(resolveNounDef(ctx)) {
-		fieldPaths[f.ID] = f
-	}
-
-	if err := applyMutations(mutable, ctx.SetArgs, ctx.DelArgs, fieldPaths); err != nil {
+	postBody, err := mutationBodyForCtx(ctx, base, ep.CreateBodyWrap, nil, false, false)
+	if err != nil {
 		return nil, err
-	}
-
-	var postBody any = mutable
-	if ep.CreateBodyWrap != "" {
-		postBody = map[string]any{ep.CreateBodyWrap: mutable}
 	}
 	postQP := evalQueryParams(ctx, ep.QueryParams, true)
 	result, _, err := c.Post(path, postQP, postBody)
 	return result, err
 }
 
-// applyMutations applies --set and --del operations to mutable in-place.
-// applyMutations applies --set and --del operations to mutable in-place.
-// fieldPaths maps field IDs to their FieldDef; fd.MutablePath is the dot-path
-// within mutable (relative to the update_body_pick subtree, no "it." prefix).
-func applyMutations(mutable map[string]any, setArgs map[string]string, delArgs []string, fieldPaths map[string]spec.FieldDef) error {
-	// Build a map from user-facing field ID to its mutable_path within mutable.
-	idToRel := map[string]string{}
-	for id, fd := range fieldPaths {
-		idToRel[id] = fd.MutablePath
+func mutationBodyForCtx(ctx *cmdctx.Ctx, base map[string]any, wrap string, extra map[string]any, picked, sparsePatch bool) (map[string]any, error) {
+	ops := effectiveMutations(ctx.SetArgs, ctx.DelArgs, ctx.MutationFlags)
+	if ctx.MutationOrderCaptured {
+		ops = ctx.MutationFlags
 	}
-
-	for key, val := range setArgs {
-		// key may be a field ID (e.g. "name"), a field.subkey (e.g. "tags.env"),
-		// or a set member (e.g. "modules.CD" for field_type=set).
-		parts := strings.SplitN(key, ".", 2)
-		fieldID := parts[0]
-
-		fd, known := fieldPaths[fieldID]
-		if !known {
-			return fmt.Errorf("unknown or read-only field %q; use --list-fields to see mutable fields", fieldID)
-		}
-		rel := idToRel[fieldID]
-
-		switch fd.FieldType {
-		case "tags":
-			if len(parts) < 2 {
-				return fmt.Errorf("--set %s: tag fields require a key (e.g. --%s tags.key=value)", key, "set")
+	if len(ops) > 0 && ctx.Resolver == nil {
+		return nil, fmt.Errorf("field type resolver is not available")
+	}
+	fields := map[string]spec.FieldDef{}
+	handlers := map[string]cmdctx.FieldTypeHandler{}
+	mutableFields := MutableFields(resolveNounDef(ctx))
+	for _, field := range mutableFields {
+		fields[field.ID] = field
+		if (len(ops) > 0 || picked) && ctx.Resolver != nil {
+			if handler, found := ctx.Resolver.ResolveFieldType(field.FieldType); found {
+				handlers[field.FieldType] = handler
 			}
-			tagKey := parts[1]
-			// Get or create the tags map.
-			tagsMap := getDotPathMap(mutable, rel)
-			if tagsMap == nil {
-				tagsMap = map[string]any{}
-			}
-			tagsMap[tagKey] = val
-			setDotPath(mutable, rel, tagsMap)
-		case "set":
-			if len(parts) < 2 {
-				return fmt.Errorf("--set %s: set fields require a member (e.g. --set modules.CD)", key)
-			}
-			member := parts[1]
-			arr := getDotPathSlice(mutable, rel)
-			if !sliceContains(arr, member) {
-				arr = append(arr, member)
-			}
-			setDotPath(mutable, rel, arr)
-		default: // scalar
-			setDotPath(mutable, rel, val)
 		}
 	}
-
-	for _, key := range delArgs {
-		parts := strings.SplitN(key, ".", 2)
-		fieldID := parts[0]
-
-		fd, known := fieldPaths[fieldID]
-		if !known {
-			return fmt.Errorf("unknown or read-only field %q; use --list-fields to see mutable fields", fieldID)
-		}
-		rel := idToRel[fieldID]
-
-		switch fd.FieldType {
-		case "tags":
-			if len(parts) < 2 {
-				return fmt.Errorf("--del %s: tag fields require a key (e.g. --del tags.key)", key)
-			}
-			tagKey := parts[1]
-			tagsMap := getDotPathMap(mutable, rel)
-			if tagsMap != nil {
-				delete(tagsMap, tagKey)
-				setDotPath(mutable, rel, tagsMap)
-			}
-		case "set":
-			if len(parts) < 2 {
-				return fmt.Errorf("--del %s: set fields require a member (e.g. --del modules.CD)", key)
-			}
-			member := parts[1]
-			arr := getDotPathSlice(mutable, rel)
-			setDotPath(mutable, rel, sliceRemove(arr, member))
-		default: // scalar
-			setDotPath(mutable, rel, nil)
-		}
+	if !picked {
+		mutableFields = nil
 	}
-	return nil
+	return buildMutationBodyWithPick(base, mutableFields, fields, handlers, ops, wrap, extra, sparsePatch)
 }
 
 // getDotPathMap retrieves a map[string]any at a dot-separated path, or nil.
