@@ -215,6 +215,96 @@ nouns:
       - id: modified
         expr: it.modifiedAt
 
+  - noun: experiment_settings
+    short_desc: An experiment's statistical settings (used for field lookup only).
+    fields:
+      - id: id
+        expr: it.id
+      - id: source
+        expr: it.source
+      - id: statistical_test_type
+        label: Statistical Test Type
+        expr: it.statisticalTestType
+        mutable_path: statisticalTestType
+      - id: significance_threshold
+        label: Significance Threshold
+        expr: string(it.significanceThreshold)
+        mutable_path: significanceThreshold
+      - id: multiple_comparison_correction
+        label: Multiple Comparison Correction
+        expr: it.multipleComparisonCorrection
+        mutable_path: multipleComparisonCorrection
+      - id: minimum_sample_size
+        label: Minimum Sample Size
+        expr: string(it.minimumSampleSize)
+        mutable_path: minimumSampleSize
+      - id: review_period
+        label: Review Period
+        expr: it.reviewPeriod
+        mutable_path: reviewPeriod
+      - id: variance_reduction
+        label: Variance Reduction
+        expr: it.varianceReduction.method
+        mutable_path: varianceReduction.method
+
+  - noun: experiment_alerts
+    short_desc: An experiment's alerting configuration (used for field lookup only).
+    fields:
+      - id: id
+        expr: it.id
+      - id: is_enabled
+        label: Enabled
+        expr: string(it.isEnabled)
+        mutable_path: isEnabled
+
+  - noun: experiment_results
+    short_desc: A metric result for an experiment comparison (used for field lookup only, read-only).
+    fields:
+      - id: metric_id
+        label: Metric Id
+        expr: it.metricId.id
+      - id: metric_name
+        label: Metric Name
+        expr: it.metricId.name
+      - id: category
+        expr: it.category
+      - id: comparison
+        expr: it.comparison
+      - id: positive
+        expr: string(it.positive)
+      - id: value
+        expr: 'it.value == nil ? "" : string(it.value)'
+      - id: error_margin
+        label: Error Margin
+        expr: 'it.errorMargin == nil ? "" : string(it.errorMargin)'
+      - id: pvalue
+        label: P-Value
+        expr: 'it.pvalue == nil ? "" : string(it.pvalue)'
+      - id: metric_result_state
+        label: State
+        expr: it.metricResultState
+      - id: impact_lower
+        label: Impact Lower
+        expr: 'it.impactLower == nil ? "" : string(it.impactLower)'
+      - id: impact_upper
+        label: Impact Upper
+        expr: 'it.impactUpper == nil ? "" : string(it.impactUpper)'
+      - id: baseline_mean
+        label: Baseline Mean
+        expr: 'it.baselineMean == nil ? "" : string(it.baselineMean)'
+      - id: comparison_mean
+        label: Comparison Mean
+        expr: 'it.comparisonMean == nil ? "" : string(it.comparisonMean)'
+      - id: baseline_sample_size
+        label: Baseline Sample Size
+        expr: 'it.baselineSampleSize == nil ? "" : string(it.baselineSampleSize)'
+      - id: comparison_sample_size
+        label: Comparison Sample Size
+        expr: 'it.comparisonSampleSize == nil ? "" : string(it.comparisonSampleSize)'
+      - id: variance_reduction_method
+        label: Variance Reduction Method
+        expr: it.varianceReduction.method
+
 commands:
   # ── feature_flag ─────────────────────────────────────────────────────────────
 
@@ -1205,3 +1295,141 @@ commands:
         account_id: auth.account
         organization_identifier: auth.org
         project_identifier: auth.project
+
+  # ── experiment:settings ──────────────────────────────────────────────────────
+
+  - command: get experiment:settings
+    verb: get
+    noun: experiment
+    noun_variant: settings
+    short: "Get an experiment's statistical settings: harness get experiment:settings <experiment-id>"
+    handler_type: endpoint
+    fields_noun: experiment_settings
+    endpoint:
+      path: /fme/api/v4/experiments/{{ctx.id}}/settings
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+      item_expr: it
+      yaml_pick_expr: it
+
+  - command: update experiment:settings
+    verb: update
+    noun: experiment
+    noun_variant: settings
+    short: "Update an experiment's statistical settings: harness update experiment:settings <experiment-id> --set significance_threshold=0.1"
+    handler_type: endpoint
+    fields_noun: experiment_settings
+    flags_builtin:
+      set: true
+    endpoint:
+      method: PATCH
+      path: /fme/api/v4/experiments/{{ctx.id}}/settings
+      get_path: /fme/api/v4/experiments/{{ctx.id}}/settings
+      update_strategy: get-then-patch
+      # v4's UpdateExperimentSettingsRequest is an RFC 7396 merge patch (Content-Type
+      # application/merge-patch+json): omitted fields keep their existing value, explicit
+      # null is rejected for these scalars. The PATCH body this framework sends is sparse —
+      # only fields touched by --set are included (see update experiment for the same
+      # pattern) — so update_body_pick here only exists to exclude id/source (server-derived;
+      # echoing them back would 400) from ever being settable via --set.
+      update_body_pick: "{statisticalTestType: it.statisticalTestType, significanceThreshold: it.significanceThreshold, multipleComparisonCorrection: it.multipleComparisonCorrection, minimumSampleSize: it.minimumSampleSize, reviewPeriod: it.reviewPeriod, varianceReduction: it.varianceReduction}"
+      update_body_wrap: ""
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+      item_expr: it.entity
+      text_header: "\nUpdated settings for experiment {{ctx.id}}\n"
+
+  - command: delete experiment:settings
+    verb: delete
+    noun: experiment
+    noun_variant: settings
+    confirm_mode: prompt
+    short: "Reset an experiment's settings to their defaults: harness delete experiment:settings <experiment-id>"
+    handler_type: endpoint
+    endpoint:
+      method: DELETE
+      path: /fme/api/v4/experiments/{{ctx.id}}/settings
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+
+  # ── experiment:alerts ─────────────────────────────────────────────────────────
+
+  - command: get experiment:alerts
+    verb: get
+    noun: experiment
+    noun_variant: alerts
+    short: "Get an experiment's alerting configuration: harness get experiment:alerts <experiment-id>"
+    handler_type: endpoint
+    fields_noun: experiment_alerts
+    endpoint:
+      path: /fme/api/v4/experiments/{{ctx.id}}/alerting
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+      item_expr: it
+      yaml_pick_expr: it
+
+  - command: update experiment:alerts
+    verb: update
+    noun: experiment
+    noun_variant: alerts
+    short: "Update an experiment's alerting configuration: harness update experiment:alerts <experiment-id> --set is_enabled=true"
+    handler_type: endpoint
+    fields_noun: experiment_alerts
+    flags_builtin:
+      set: true
+    endpoint:
+      method: PATCH
+      path: /fme/api/v4/experiments/{{ctx.id}}/alerting
+      get_path: /fme/api/v4/experiments/{{ctx.id}}/alerting
+      update_strategy: get-then-patch
+      # v4 rejects both an omitted and an explicit null isEnabled with 400. isEnabled is
+      # the only mutable field here, so every real invocation passes --set is_enabled=...
+      # and this framework's sparse get-then-patch body already includes it in that case.
+      # Known gap: running this command with no --set at all sends an empty patch and gets
+      # a 400 from the backend rather than a client-side error — same class of limitation as
+      # any single-field PATCH resource on this framework, not specific to alerting.
+      update_body_pick: "{isEnabled: it.isEnabled}"
+      update_body_wrap: ""
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+      item_expr: it.entity
+      text_header: "\nUpdated alerting config for experiment {{ctx.id}}\n"
+
+  # ── experiment:results ───────────────────────────────────────────────────────
+
+  - command: list experiment:results
+    verb: list
+    noun: experiment
+    noun_variant: results
+    short: "List metric results for an experiment: harness list experiment:results <experiment-id> [--metric-id <id>]"
+    handler_type: endpoint
+    requires_parentid: true
+    parentid_label: "<experiment-id>"
+    fields_noun: experiment_results
+    flags:
+      # ResultsResource only exposes a single filter (metric_ids, a JAX-RS Set<String>
+      # bound from repeated query params). There's no comparisons filter on this endpoint,
+      # and this CLI's query builder can only emit one value per param key, so multi-value
+      # metric filtering isn't supported yet — this flag is single-value only.
+      - name: metric-id
+        description: Filter by a single metric id
+    endpoint:
+      path: /fme/api/v4/experiments/{{ctx.parentId}}/metric-results
+      items_expr: it.data
+      item_item_expr: it
+      query_params:
+        account_id: auth.account
+        organization_identifier: auth.org
+        project_identifier: auth.project
+        metric_ids: flags["metric-id"]
+      columns: [metric_id, metric_name, category, comparison, baseline_mean, comparison_mean, value, pvalue, positive, impact_lower, impact_upper]
