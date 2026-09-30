@@ -658,7 +658,7 @@ func TestFMESpec_DeleteSegmentDefinition(t *testing.T) {
 	ctx.Noun = "segment"
 	ctx.Resolver = reg
 	ctx.FormatFlags.Format = "json"
-	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1", "comment": "a comment", "title": "a title"}
 
 	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
 		t.Fatalf("RunEndpoint: %v", err)
@@ -670,6 +670,44 @@ func TestFMESpec_DeleteSegmentDefinition(t *testing.T) {
 	}
 	if !strings.Contains(got.rawQuery, "environment_id=env-uuid-1") {
 		t.Fatalf("query = %q, want environment_id=env-uuid-1 (from --env)", got.rawQuery)
+	}
+	if !strings.Contains(got.rawQuery, "comment=a+comment") {
+		t.Fatalf("query = %q, want comment=a+comment (from --comment)", got.rawQuery)
+	}
+	if !strings.Contains(got.rawQuery, "title=a+title") {
+		t.Fatalf("query = %q, want title=a+title (from --title)", got.rawQuery)
+	}
+}
+
+// TestFMESpec_DeleteSegmentDefinition_CommentTitleOmittedWhenUnset asserts that omitting
+// --comment/--title leaves them out of the query string entirely (not sent as empty values),
+// since some workspaces treat an empty title differently from a missing one.
+func TestFMESpec_DeleteSegmentDefinition_CommentTitleOmittedWhenUnset(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "segment:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete segment:definition: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	if strings.Contains(got.rawQuery, "comment=") || strings.Contains(got.rawQuery, "title=") {
+		t.Fatalf("query = %q, want no comment/title when --comment/--title are omitted", got.rawQuery)
 	}
 }
 

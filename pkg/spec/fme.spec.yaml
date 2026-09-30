@@ -887,20 +887,28 @@ commands:
     noun: segment
     noun_variant: definition
     confirm_mode: prompt
-    short: "Delete (archive) a segment definition from an environment: harness delete segment:definition <segment-name> --env <env-id>"
+    short: "Delete (archive) a segment definition from an environment: harness delete segment:definition <segment-name> --env <env-id> [--comment <text>] [--title <text>]"
     handler_type: endpoint
     flags:
       - name: env
         description: Environment identifier (required)
         required: true
+      - name: comment
+        description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: DELETE
       path: /fme/api/v4/segment-definitions/{{ctx.id}}
+      # comment/title travel as query params (not a body): DELETE has no request body on
+      # this endpoint, matching the v4 resource's @QueryParam("comment")/@QueryParam("title").
       query_params:
         account_id: auth.account
         organization_identifier: auth.org
         project_identifier: auth.project
         environment_id: flags.env
+        comment: flags.comment
+        title: flags.title
 
   # ── segment:definition:keys ───────────────────────────────────────────────────
   # Membership keys live on the definition, not the segment, so every keys command is
