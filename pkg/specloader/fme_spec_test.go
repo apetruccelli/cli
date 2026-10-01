@@ -958,6 +958,153 @@ func TestFMESpec_ListSegmentDefinition(t *testing.T) {
 	}
 }
 
+// TestFMESpec_GetSegmentDefinition asserts --env reaches environment_id on the GET, which
+// is @NotBlank on the v4 resource (same requirement as delete/list), and that the
+// segment_definition fields (segment/environment names, description, status) render off
+// the flat response.
+func TestFMESpec_GetSegmentDefinition(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("get", "segment:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("get segment:definition: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"segment":{"name":"my-segment"},"environment":{"name":"Prod"},"description":"desc","status":"ACTIVE","createdAt":1778049995.725}`
+	srv, path, query := fmeCaptureServerWithQuery(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if *path != "/fme/api/v4/segment-definitions/my-segment" {
+		t.Fatalf("request path = %q, want /fme/api/v4/segment-definitions/my-segment", *path)
+	}
+	if !strings.Contains(*query, "environment_id=env-uuid-1") {
+		t.Fatalf("query = %q, want environment_id=env-uuid-1 (from --env)", *query)
+	}
+
+	out := fmeReadOut(t, ctx)
+	for _, want := range []string{"my-segment", "Prod", "desc", "ACTIVE"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q: %s", want, out)
+		}
+	}
+}
+
+// TestFMESpec_CreateSegmentDefinition asserts --env reaches environment_id and
+// --description lands in the create body, and that an omitted --description is sent as
+// nil rather than an empty string (description is optional on the v4 resource).
+func TestFMESpec_CreateSegmentDefinition(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		description string
+		wantBody    map[string]any
+	}{
+		{name: "with description", description: "from the cli", wantBody: map[string]any{"description": "from the cli"}},
+		{name: "without description", description: "", wantBody: map[string]any{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := registry.New()
+			if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+				t.Fatalf("LoadSpec: %v", err)
+			}
+			cs := reg.GetSpec("create", "segment:definition")
+			if cs == nil || cs.Endpoint == nil {
+				t.Fatal("create segment:definition: command not found or missing endpoint spec")
+			}
+
+			srv, caps := fmeSequenceServer(t, []string{`{"entity":{"segment":{"name":"my-segment"},"environment":{"name":"Prod"}}}`})
+
+			ctx := fmeTestCtx(t, srv.URL)
+			ctx.Id = "my-segment"
+			ctx.Noun = "segment"
+			ctx.Resolver = reg
+			ctx.FormatFlags.Format = "json"
+			ctx.FlagValues = map[string]any{"env": "env-uuid-1", "description": tc.description}
+
+			if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+				t.Fatalf("RunEndpoint: %v", err)
+			}
+
+			got := (*caps)[0]
+			if got.method != "POST" || got.path != "/fme/api/v4/segment-definitions/my-segment" {
+				t.Fatalf("request = %s %s, want POST /fme/api/v4/segment-definitions/my-segment", got.method, got.path)
+			}
+			if !strings.Contains(got.rawQuery, "environment_id=env-uuid-1") {
+				t.Fatalf("query = %q, want environment_id=env-uuid-1 (from --env)", got.rawQuery)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(got.body, &body); err != nil {
+				t.Fatalf("unmarshal request body: %v", err)
+			}
+			if _, ok := tc.wantBody["description"]; !ok {
+				if _, ok := body["description"]; ok {
+					t.Fatalf("body contains description though --description was not passed: %v", body)
+				}
+			} else if body["description"] != tc.wantBody["description"] {
+				t.Fatalf("body[description] = %v, want %q", body["description"], tc.wantBody["description"])
+			}
+		})
+	}
+}
+
+// TestFMESpec_UpdateSegmentDefinition asserts the get-then-patch body is narrowed to
+// description only, mirroring TestFMESpec_UpdateSegment: echoing the whole GET response
+// back would leak segment/environment/status/created, which the v4 PATCH does not accept.
+func TestFMESpec_UpdateSegmentDefinition(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "segment:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("update segment:definition: command not found or missing endpoint spec")
+	}
+
+	getResp := `{"segment":{"name":"my-segment"},"environment":{"name":"Prod"},"description":"old desc","status":"ACTIVE","createdAt":1778049995.725}`
+	srv, caps := fmeSequenceServer(t, []string{getResp, `{"entity":{"segment":{"name":"my-segment"},"environment":{"name":"Prod"}}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+	ctx.SetArgs = map[string]string{"description": "new desc"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	if len(*caps) != 2 {
+		t.Fatalf("got %d requests, want 2 (GET, PATCH)", len(*caps))
+	}
+	patch := (*caps)[1]
+	if patch.method != "PATCH" {
+		t.Fatalf("2nd request method = %q, want PATCH", patch.method)
+	}
+	if !strings.Contains(patch.rawQuery, "environment_id=env-uuid-1") {
+		t.Fatalf("PATCH query = %q, want environment_id=env-uuid-1", patch.rawQuery)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(patch.body, &body); err != nil {
+		t.Fatalf("unmarshal PATCH body: %v", err)
+	}
+	if len(body) != 1 || body["description"] != "new desc" {
+		t.Fatalf("PATCH body = %v, want exactly {description: new desc} — no leaked segment/environment/status/created", body)
+	}
+}
+
 // TestFMESpec_ListTrafficType drives "list traffic_type" against the mock server
 // and asserts it hits /fme/api/v4/traffic-types and renders id/name fields.
 func TestFMESpec_ListTrafficType(t *testing.T) {
