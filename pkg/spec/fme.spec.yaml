@@ -363,8 +363,13 @@ commands:
     verb: delete
     noun: feature_flag
     confirm_mode: prompt
-    short: Delete a feature flag (must have no active definitions)
+    short: "Delete a feature flag (must have no active definitions): harness delete feature_flag <name> [--comment <text>] [--title <text>]"
     handler_type: endpoint
+    flags:
+      - name: comment
+        description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: DELETE
       path: /fme/api/v4/feature-flags/{{ctx.id}}
@@ -372,6 +377,12 @@ commands:
         account_id: auth.account
         organization_identifier: auth.org
         project_identifier: auth.project
+      # comment/title travel as a JSON body (not query params): the v4 resource takes
+      # @Valid ArchiveUnarchiveRequest with no @QueryParam, unlike segment:definition's delete.
+      # Omitted (not sent as null/empty) when unset, same reasoning as feature_flag:definition update.
+      body_params:
+        comment: 'flags.comment != "" ? flags.comment : nil'
+        title: 'flags.title != "" ? flags.title : nil'
 
   - command: execute feature_flag:archive
     verb: execute
@@ -740,8 +751,13 @@ commands:
     verb: delete
     noun: fme_environment
     confirm_mode: prompt
-    short: Delete (archive) an FME environment
+    short: "Delete (archive) an FME environment: harness delete fme_environment <id> [--comment <text>] [--title <text>]"
     handler_type: endpoint
+    flags:
+      - name: comment
+        description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: DELETE
       path: /fme/api/v4/environments/{{ctx.id}}
@@ -749,6 +765,11 @@ commands:
         account_id: auth.account
         organization_identifier: auth.org
         project_identifier: auth.project
+      # comment/title travel as a JSON body (not query params): the v4 resource takes
+      # @Valid ArchiveUnarchiveRequest with no @QueryParam, unlike segment:definition's delete.
+      body_params:
+        comment: 'flags.comment != "" ? flags.comment : nil'
+        title: 'flags.title != "" ? flags.title : nil'
 
   # ── segment ──────────────────────────────────────────────────────────────────
 
@@ -1016,12 +1037,16 @@ commands:
     noun: segment
     noun_variant: definition
     confirm_mode: prompt
-    short: "Delete (archive) a segment definition from an environment: harness delete segment:definition <segment-name> --env <env-id>"
+    short: "Delete (archive) a segment definition from an environment: harness delete segment:definition <segment-name> --env <env-id> [--comment <text>] [--title <text>]"
     handler_type: endpoint
     flags:
       - name: env
         description: Environment identifier (required)
         required: true
+      - name: comment
+        description: Audit comment
+      - name: title
+        description: Audit title
     endpoint:
       method: DELETE
       path: /fme/api/v4/segment-definitions/{{ctx.id}}
@@ -1030,6 +1055,12 @@ commands:
         organization_identifier: auth.org
         project_identifier: auth.project
         environment_id: flags.env
+      # comment/title travel as a JSON body (not query params): FME-19742 changed this
+      # resource's delete() to take @Valid SegmentDefinitionDeleteRequest with no
+      # @QueryParam, same as feature_flag/environment delete.
+      body_params:
+        comment: 'flags.comment != "" ? flags.comment : nil'
+        title: 'flags.title != "" ? flags.title : nil'
 
   # ── metric ────────────────────────────────────────────────────────────────────
   # tags/owners are read-only here: the object_set field type needed for incremental
