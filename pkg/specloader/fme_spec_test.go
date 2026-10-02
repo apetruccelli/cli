@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -807,6 +808,7 @@ func TestFMESpec_AddSegmentKeys(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := registry.New()
+			fme.ModuleInit(reg.Module("fme"))
 			if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 				t.Fatalf("LoadSpec: %v", err)
 			}
@@ -871,6 +873,7 @@ func TestFMESpec_SegmentKeysMutation_NoFields(t *testing.T) {
 	for _, variant := range []string{"segment:definition:add-keys", "segment:definition:remove-keys"} {
 		t.Run(variant, func(t *testing.T) {
 			reg := registry.New()
+			fme.ModuleInit(reg.Module("fme"))
 			if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 				t.Fatalf("LoadSpec: %v", err)
 			}
@@ -915,6 +918,7 @@ func TestFMESpec_SegmentKeysMutation_NoFields(t *testing.T) {
 // body is unreliable across HTTP clients.
 func TestFMESpec_RemoveSegmentKeys(t *testing.T) {
 	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
 	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 		t.Fatalf("LoadSpec: %v", err)
 	}
@@ -3479,5 +3483,132 @@ func TestFMESpec_CreateMetric_TagsOwners(t *testing.T) {
 	entry := owners[0].(map[string]any)
 	if entry["type"] != "USER" || entry["email"] != "bob@example.com" {
 		t.Fatalf("owner entry = %v, want {type: USER, email: bob@example.com}", entry)
+	}
+}
+
+// TestFMESpec_AddKeys_MergesKeyAndKeysFile asserts the add-keys body carries --key values
+// followed by the (already resolved, newline-joined) --keys-file keys in a single request.
+func TestFMESpec_AddKeys_MergesKeyAndKeysFile(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("execute", "segment:definition:add-keys")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("execute segment:definition:add-keys: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{"keys":["x"],"governance":{}}`})
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "power-users"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{
+		"env":       "env-1",
+		"key":       []string{"solo"},
+		"keys-file": "a\nb\nc",
+		"replace":   false,
+		"comment":   "",
+		"title":     "",
+	}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+	got := (*caps)[0]
+	if got.method != http.MethodPost || got.path != "/fme/api/v4/segment-definitions/power-users/keys" {
+		t.Fatalf("request = %s %s", got.method, got.path)
+	}
+	var body struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if want := []string{"solo", "a", "b", "c"}; !reflect.DeepEqual(body.Keys, want) {
+		t.Fatalf("keys = %q, want %q", body.Keys, want)
+	}
+}
+
+// TestFMESpec_RemoveKeys_KeysFileOnly asserts remove-keys works with only --keys-file.
+func TestFMESpec_RemoveKeys_KeysFileOnly(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("execute", "segment:definition:remove-keys")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("execute segment:definition:remove-keys: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{"keys":[],"governance":{}}`})
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "power-users"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-1", "keys-file": "a\nb", "comment": "", "title": ""}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+	var body struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.Unmarshal((*caps)[0].body, &body); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	if want := []string{"a", "b"}; !reflect.DeepEqual(body.Keys, want) {
+		t.Fatalf("keys = %q, want %q", body.Keys, want)
+	}
+}
+
+// TestFMESpec_AddKeys_NoKeysRejected asserts the validator stops a request with neither
+// --key nor --keys-file before anything is sent.
+func TestFMESpec_AddKeys_NoKeysRejected(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("execute", "segment:definition:add-keys")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("execute segment:definition:add-keys: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{}`})
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "power-users"
+	ctx.Resolver = reg
+	ctx.FlagValues = map[string]any{"env": "env-1", "replace": false, "comment": "", "title": ""}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err == nil || !strings.Contains(err.Error(), "no keys given") {
+		t.Fatalf("err = %v, want no keys given", err)
+	}
+	if len(*caps) != 0 {
+		t.Fatalf("expected no request to be sent, got %d", len(*caps))
+	}
+}
+
+// TestFMESpec_AddKeys_HeaderCountsAllKeys asserts the text header reports the merged
+// --key plus --keys-file count, not just one source.
+func TestFMESpec_AddKeys_HeaderCountsAllKeys(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("execute", "segment:definition:add-keys")
+	srv, _ := fmeSequenceServer(t, []string{`{"keys":["x"],"governance":{}}`})
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "power-users"
+	ctx.Resolver = reg
+	ctx.FlagValues = map[string]any{"env": "env-1", "key": []string{"solo"}, "keys-file": "a\nb\nc", "replace": false, "comment": "", "title": ""}
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+	if out := fmeReadOut(t, ctx); !strings.Contains(out, "Added 4 key(s) to power-users") {
+		t.Fatalf("output = %q, want header with 4 keys", out)
 	}
 }
