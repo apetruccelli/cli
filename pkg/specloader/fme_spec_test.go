@@ -416,6 +416,83 @@ func TestFMESpec_DeleteFMEEnvironment(t *testing.T) {
 	}
 }
 
+// TestFMESpec_DeleteFMEEnvironment_CommentTitle asserts --comment/--title reach the DELETE
+// body as JSON: the v4 environments resource takes @Valid ArchiveUnarchiveRequest with no
+// @QueryParam, unlike segment:definition's delete, which uses query params instead.
+func TestFMESpec_DeleteFMEEnvironment_CommentTitle(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "fme_environment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete fme_environment: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{"governance":{"result":"ok"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "env-uuid-1"
+	ctx.Noun = "fme_environment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"comment": "a comment", "title": "a title"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	if got.method != http.MethodDelete || got.path != "/fme/api/v4/environments/env-uuid-1" {
+		t.Fatalf("request = %s %s, want DELETE /fme/api/v4/environments/env-uuid-1", got.method, got.path)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal DELETE body: %v", err)
+	}
+	if body["comment"] != "a comment" || body["title"] != "a title" {
+		t.Fatalf("body = %v, want comment=%q title=%q", body, "a comment", "a title")
+	}
+}
+
+// TestFMESpec_DeleteFMEEnvironment_CommentTitleOmittedWhenUnset asserts that omitting
+// --comment/--title leaves them out of the body entirely (not sent as null/empty values),
+// since some workspaces treat an empty title differently from a missing one.
+func TestFMESpec_DeleteFMEEnvironment_CommentTitleOmittedWhenUnset(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "fme_environment")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete fme_environment: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{"governance":{"result":"ok"}}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "env-uuid-1"
+	ctx.Noun = "fme_environment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal DELETE body: %v", err)
+	}
+	if _, present := body["comment"]; present {
+		t.Fatalf("body = %v, want no comment when --comment is omitted", body)
+	}
+	if _, present := body["title"]; present {
+		t.Fatalf("body = %v, want no title when --title is omitted", body)
+	}
+}
+
 // TestFMESpec_ListSegment drives "list segment" and asserts get_id_expr
 // resolves off it.name (segments, unlike fme_environment, are addressed by name).
 func TestFMESpec_ListSegment(t *testing.T) {
@@ -671,6 +748,83 @@ func TestFMESpec_DeleteSegmentDefinition(t *testing.T) {
 	}
 	if !strings.Contains(got.rawQuery, "environment_id=env-uuid-1") {
 		t.Fatalf("query = %q, want environment_id=env-uuid-1 (from --env)", got.rawQuery)
+	}
+}
+
+// TestFMESpec_DeleteSegmentDefinition_CommentTitle asserts --comment/--title reach the
+// DELETE body as JSON: FME-19742 changed this resource's delete() to take @Valid
+// SegmentDefinitionDeleteRequest with no @QueryParam, same as feature_flag/environment.
+func TestFMESpec_DeleteSegmentDefinition_CommentTitle(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "segment:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete segment:definition: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1", "comment": "a comment", "title": "a title"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	if got.method != "DELETE" || got.path != "/fme/api/v4/segment-definitions/my-segment" {
+		t.Fatalf("request = %s %s, want DELETE /fme/api/v4/segment-definitions/my-segment", got.method, got.path)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal DELETE body: %v", err)
+	}
+	if body["comment"] != "a comment" || body["title"] != "a title" {
+		t.Fatalf("body = %v, want comment=%q title=%q", body, "a comment", "a title")
+	}
+}
+
+// TestFMESpec_DeleteSegmentDefinition_CommentTitleOmittedWhenUnset asserts that omitting
+// --comment/--title leaves them out of the body entirely (not sent as null/empty values).
+func TestFMESpec_DeleteSegmentDefinition_CommentTitleOmittedWhenUnset(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "segment:definition")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete segment:definition: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-segment"
+	ctx.Noun = "segment"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal DELETE body: %v", err)
+	}
+	if _, present := body["comment"]; present {
+		t.Fatalf("body = %v, want no comment when --comment is omitted", body)
+	}
+	if _, present := body["title"]; present {
+		t.Fatalf("body = %v, want no title when --title is omitted", body)
 	}
 }
 
@@ -1382,6 +1536,82 @@ func TestFMESpec_DeleteFeatureFlag(t *testing.T) {
 	got := (*caps)[0]
 	if got.method != "DELETE" || got.path != "/fme/api/v4/feature-flags/my-flag" {
 		t.Fatalf("request = %s %s, want DELETE /fme/api/v4/feature-flags/my-flag", got.method, got.path)
+	}
+}
+
+// TestFMESpec_DeleteFeatureFlag_CommentTitle asserts --comment/--title reach the DELETE
+// body as JSON: the v4 feature-flags resource takes @Valid ArchiveUnarchiveRequest with no
+// @QueryParam, unlike segment:definition's delete, which uses query params instead.
+func TestFMESpec_DeleteFeatureFlag_CommentTitle(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete feature_flag: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+	ctx.FlagValues = map[string]any{"comment": "a comment", "title": "a title"}
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	if got.method != "DELETE" || got.path != "/fme/api/v4/feature-flags/my-flag" {
+		t.Fatalf("request = %s %s, want DELETE /fme/api/v4/feature-flags/my-flag", got.method, got.path)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal DELETE body: %v", err)
+	}
+	if body["comment"] != "a comment" || body["title"] != "a title" {
+		t.Fatalf("body = %v, want comment=%q title=%q", body, "a comment", "a title")
+	}
+}
+
+// TestFMESpec_DeleteFeatureFlag_CommentTitleOmittedWhenUnset asserts that omitting
+// --comment/--title leaves them out of the body entirely (not sent as null/empty values).
+func TestFMESpec_DeleteFeatureFlag_CommentTitleOmittedWhenUnset(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("delete", "feature_flag")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("delete feature_flag: command not found or missing endpoint spec")
+	}
+
+	srv, caps := fmeSequenceServer(t, []string{`{}`})
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "my-flag"
+	ctx.Noun = "feature_flag"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "json"
+
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+
+	got := (*caps)[0]
+	var body map[string]any
+	if err := json.Unmarshal(got.body, &body); err != nil {
+		t.Fatalf("unmarshal DELETE body: %v", err)
+	}
+	if _, present := body["comment"]; present {
+		t.Fatalf("body = %v, want no comment when --comment is omitted", body)
+	}
+	if _, present := body["title"]; present {
+		t.Fatalf("body = %v, want no title when --title is omitted", body)
 	}
 }
 
