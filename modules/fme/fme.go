@@ -17,4 +17,6 @@ func ModuleInit(reg registry.ModuleRegistrar) {
 	reg.RegisterFieldType("tags", tagsFieldType)
 	reg.RegisterFieldType("flag_sets", flagSetsFieldType)
 	reg.RegisterFieldType("metric_refs", metricRefsFieldType)
+	reg.RegisterFlagResolveFn(resolveKeysFileFnID, resolveKeysFile)
+	reg.RegisterEndpointValidatorFn(validateSegmentKeysID, validateSegmentKeys)
 }
