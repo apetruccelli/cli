@@ -91,7 +91,7 @@ func resolveKeysFile(_ *cmdctx.Ctx, raw string) (*cmdctx.FlagResolveResult, erro
 	return &cmdctx.FlagResolveResult{Value: strings.Join(keys, keysFileSeparatorBlock)}, nil
 }
 
-// validateSegmentKeys rejects an empty key list (unless replacing, which clears the
+// validateSegmentKeys rejects --remove combined with --replace, an empty key list (unless replacing, which clears the
 // segment) and lists over the per-call limit before anything is sent.
 func validateSegmentKeys(_ *cmdctx.Ctx, req cmdctx.EndpointRequest) error {
 	count := 0
@@ -106,6 +106,9 @@ func validateSegmentKeys(_ *cmdctx.Ctx, req cmdctx.EndpointRequest) error {
 	}
 	if count > maxSegmentKeysPerCall {
 		return fmt.Errorf("%d keys exceeds the limit of %d per call; split them across several calls", count, maxSegmentKeysPerCall)
+	}
+	if req.QueryParams["replace"] == "true" && strings.HasSuffix(req.Path, "/keys/remove") {
+		return errors.New("--remove and --replace cannot be combined")
 	}
 	if count == 0 && req.QueryParams["replace"] != "true" {
 		return errors.New("no keys given: pass --key, or --keys-file <path>")

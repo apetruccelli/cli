@@ -3824,7 +3824,7 @@ func TestFMESpec_ListExperimentResults_MetricIdFilter(t *testing.T) {
 	}
 }
 
-// TestFMESpec_ListSegmentKeys drives "list segment:definition:keys <name> --env <env>". The
+// TestFMESpec_ListSegmentKeys drives "list segment_key <name> --env <env>". The
 // endpoint returns bare strings in data, so items_expr wraps each into {key: ...} to give the
 // renderer a named field.
 func TestFMESpec_ListSegmentKeys(t *testing.T) {
@@ -3832,16 +3832,16 @@ func TestFMESpec_ListSegmentKeys(t *testing.T) {
 	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 		t.Fatalf("LoadSpec: %v", err)
 	}
-	cs := reg.GetSpec("list", "segment:definition:keys")
+	cs := reg.GetSpec("list", "segment_key")
 	if cs == nil || cs.Endpoint == nil {
-		t.Fatal("list segment:definition:keys: command not found or missing endpoint spec")
+		t.Fatal("list segment_key: command not found or missing endpoint spec")
 	}
 
 	fixture := `{"data":["user-1","user-2"],"limit":100,"offset":0,"totalCount":2}`
 	srv, path, query := fmeCaptureServerWithQuery(t, fixture)
 
 	ctx := fmeTestCtx(t, srv.URL)
-	ctx.Noun = "segment"
+	ctx.Noun = "segment_key"
 	ctx.ParentId = "my-segment"
 	ctx.Resolver = reg
 	ctx.FormatFlags.Format = "json"
@@ -3884,16 +3884,16 @@ func TestFMESpec_AddSegmentKeys(t *testing.T) {
 			if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 				t.Fatalf("LoadSpec: %v", err)
 			}
-			cs := reg.GetSpec("execute", "segment:definition:add-keys")
+			cs := reg.GetSpec("update", "segment_key")
 			if cs == nil || cs.Endpoint == nil {
-				t.Fatal("execute segment:definition:add-keys: command not found or missing endpoint spec")
+				t.Fatal("update segment_key: command not found or missing endpoint spec")
 			}
 
 			srv, caps := fmeSequenceServer(t, []string{`{"keys":["user-1","user-2"]}`})
 
 			ctx := fmeTestCtx(t, srv.URL)
 			ctx.Id = "my-segment"
-			ctx.Noun = "segment"
+			ctx.Noun = "segment_key"
 			ctx.Resolver = reg
 			ctx.FormatFlags.Format = "json"
 			ctx.FlagValues = map[string]any{
@@ -3942,30 +3942,31 @@ func TestFMESpec_AddSegmentKeys(t *testing.T) {
 // segment, so rendering the segment noun's fields against it yields a block of blank
 // labels ("Name:", "Traffic Type:", ...) — which is what happened before no_fields.
 func TestFMESpec_SegmentKeysMutation_NoFields(t *testing.T) {
-	for _, variant := range []string{"segment:definition:add-keys", "segment:definition:remove-keys"} {
-		t.Run(variant, func(t *testing.T) {
+	for _, remove := range []bool{false, true} {
+		t.Run(fmt.Sprintf("remove=%v", remove), func(t *testing.T) {
 			reg := registry.New()
 			fme.ModuleInit(reg.Module("fme"))
 			if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 				t.Fatalf("LoadSpec: %v", err)
 			}
-			cs := reg.GetSpec("execute", variant)
+			cs := reg.GetSpec("update", "segment_key")
 			if cs == nil || cs.Endpoint == nil {
-				t.Fatalf("execute %s: command not found or missing endpoint spec", variant)
+				t.Fatal("update segment_key: command not found or missing endpoint spec")
 			}
 			if !cs.Endpoint.NoFields {
-				t.Fatalf("execute %s: no_fields is not set, so the segment fields render empty", variant)
+				t.Fatal("update segment_key: no_fields is not set, so the segment fields render empty")
 			}
 
 			srv, _ := fmeSequenceServer(t, []string{`{"keys":["user-1"]}`})
 
 			ctx := fmeTestCtx(t, srv.URL)
 			ctx.Id = "my-segment"
-			ctx.Noun = "segment"
+			ctx.Noun = "segment_key"
 			ctx.Resolver = reg
 			ctx.FlagValues = map[string]any{
-				"env": "env-uuid-1",
-				"key": []string{"user-1"},
+				"env":    "env-uuid-1",
+				"key":    []string{"user-1"},
+				"remove": remove,
 			}
 
 			if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
@@ -3994,19 +3995,19 @@ func TestFMESpec_RemoveSegmentKeys(t *testing.T) {
 	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 		t.Fatalf("LoadSpec: %v", err)
 	}
-	cs := reg.GetSpec("execute", "segment:definition:remove-keys")
+	cs := reg.GetSpec("update", "segment_key")
 	if cs == nil || cs.Endpoint == nil {
-		t.Fatal("execute segment:definition:remove-keys: command not found or missing endpoint spec")
+		t.Fatal("update segment_key: command not found or missing endpoint spec")
 	}
 
 	srv, caps := fmeSequenceServer(t, []string{`{"keys":["user-1"]}`})
 
 	ctx := fmeTestCtx(t, srv.URL)
 	ctx.Id = "my-segment"
-	ctx.Noun = "segment"
+	ctx.Noun = "segment_key"
 	ctx.Resolver = reg
 	ctx.FormatFlags.Format = "json"
-	ctx.FlagValues = map[string]any{"env": "env-uuid-1", "key": []string{"user-1"}}
+	ctx.FlagValues = map[string]any{"env": "env-uuid-1", "key": []string{"user-1"}, "remove": true}
 
 	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
 		t.Fatalf("RunEndpoint: %v", err)
@@ -4101,7 +4102,7 @@ func TestFMESpec_CreateSegmentDefinition(t *testing.T) {
 
 			ctx := fmeTestCtx(t, srv.URL)
 			ctx.Id = "my-segment"
-			ctx.Noun = "segment"
+			ctx.Noun = "segment_key"
 			ctx.Resolver = reg
 			ctx.FormatFlags.Format = "json"
 			ctx.FlagValues = map[string]any{"env": "env-uuid-1", "description": tc.description}
@@ -4187,9 +4188,9 @@ func TestFMESpec_AddKeys_MergesKeyAndKeysFile(t *testing.T) {
 	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 		t.Fatalf("LoadSpec: %v", err)
 	}
-	cs := reg.GetSpec("execute", "segment:definition:add-keys")
+	cs := reg.GetSpec("update", "segment_key")
 	if cs == nil || cs.Endpoint == nil {
-		t.Fatal("execute segment:definition:add-keys: command not found or missing endpoint spec")
+		t.Fatal("update segment_key: command not found or missing endpoint spec")
 	}
 
 	srv, caps := fmeSequenceServer(t, []string{`{"keys":["x"],"governance":{}}`})
@@ -4231,9 +4232,9 @@ func TestFMESpec_RemoveKeys_KeysFileOnly(t *testing.T) {
 	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 		t.Fatalf("LoadSpec: %v", err)
 	}
-	cs := reg.GetSpec("execute", "segment:definition:remove-keys")
+	cs := reg.GetSpec("update", "segment_key")
 	if cs == nil || cs.Endpoint == nil {
-		t.Fatal("execute segment:definition:remove-keys: command not found or missing endpoint spec")
+		t.Fatal("update segment_key: command not found or missing endpoint spec")
 	}
 
 	srv, caps := fmeSequenceServer(t, []string{`{"keys":[],"governance":{}}`})
@@ -4241,7 +4242,7 @@ func TestFMESpec_RemoveKeys_KeysFileOnly(t *testing.T) {
 	ctx.Id = "power-users"
 	ctx.Resolver = reg
 	ctx.FormatFlags.Format = "json"
-	ctx.FlagValues = map[string]any{"env": "env-1", "keys-file": "a\nb", "comment": "", "title": ""}
+	ctx.FlagValues = map[string]any{"env": "env-1", "keys-file": "a\nb", "remove": true, "comment": "", "title": ""}
 
 	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
 		t.Fatalf("RunEndpoint: %v", err)
@@ -4265,9 +4266,9 @@ func TestFMESpec_AddKeys_NoKeysRejected(t *testing.T) {
 	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 		t.Fatalf("LoadSpec: %v", err)
 	}
-	cs := reg.GetSpec("execute", "segment:definition:add-keys")
+	cs := reg.GetSpec("update", "segment_key")
 	if cs == nil || cs.Endpoint == nil {
-		t.Fatal("execute segment:definition:add-keys: command not found or missing endpoint spec")
+		t.Fatal("update segment_key: command not found or missing endpoint spec")
 	}
 
 	srv, caps := fmeSequenceServer(t, []string{`{}`})
@@ -4292,7 +4293,7 @@ func TestFMESpec_AddKeys_HeaderCountsAllKeys(t *testing.T) {
 	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
 		t.Fatalf("LoadSpec: %v", err)
 	}
-	cs := reg.GetSpec("execute", "segment:definition:add-keys")
+	cs := reg.GetSpec("update", "segment_key")
 	srv, _ := fmeSequenceServer(t, []string{`{"keys":["x"],"governance":{}}`})
 	ctx := fmeTestCtx(t, srv.URL)
 	ctx.Id = "power-users"
@@ -4303,5 +4304,48 @@ func TestFMESpec_AddKeys_HeaderCountsAllKeys(t *testing.T) {
 	}
 	if out := fmeReadOut(t, ctx); !strings.Contains(out, "Added 4 key(s) to power-users") {
 		t.Fatalf("output = %q, want header with 4 keys", out)
+	}
+}
+
+// TestFMESpec_RemoveKeys_Header asserts --remove flips the header wording to "Removed ... from".
+func TestFMESpec_RemoveKeys_Header(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "segment_key")
+	srv, _ := fmeSequenceServer(t, []string{`{"keys":["x"],"governance":{}}`})
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "power-users"
+	ctx.Resolver = reg
+	ctx.FlagValues = map[string]any{"env": "env-1", "key": []string{"a", "b"}, "remove": true, "comment": "", "title": ""}
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunEndpoint: %v", err)
+	}
+	if out := fmeReadOut(t, ctx); !strings.Contains(out, "Removed 2 key(s) from power-users") {
+		t.Fatalf("output = %q, want Removed header", out)
+	}
+}
+
+// TestFMESpec_UpdateSegmentKey_RemoveWithReplaceRejected asserts --remove and --replace
+// together fail before any request is sent.
+func TestFMESpec_UpdateSegmentKey_RemoveWithReplaceRejected(t *testing.T) {
+	reg := registry.New()
+	fme.ModuleInit(reg.Module("fme"))
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("update", "segment_key")
+	srv, caps := fmeSequenceServer(t, []string{`{}`})
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Id = "power-users"
+	ctx.Resolver = reg
+	ctx.FlagValues = map[string]any{"env": "env-1", "key": []string{"a"}, "remove": true, "replace": true, "comment": "", "title": ""}
+	if _, err := registry.RunEndpoint(ctx, cs.Endpoint); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("err = %v, want cannot be combined", err)
+	}
+	if len(*caps) != 0 {
+		t.Fatalf("expected no request to be sent, got %d", len(*caps))
 	}
 }
