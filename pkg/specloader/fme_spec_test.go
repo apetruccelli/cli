@@ -3071,3 +3071,67 @@ func TestFMESpec_ChangeRequestNounAliases(t *testing.T) {
 		}
 	}
 }
+
+// TestFMESpec_ListChangeRequests_ExtraColumns asserts the fields outside the default
+// columns resolve against the real v4 change-request shape: resource id, comment,
+// org/project identifiers, segment type, approvers and the ISO modified timestamp.
+func TestFMESpec_ListChangeRequests_ExtraColumns(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("list", "change_request")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("list change_request: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"data":[{"id":"cr-2","status":"PUBLISHED","resourceId":"seg-id","resourceType":"SEGMENT","segmentType":"LARGE","organizationIdentifier":"org1","projectIdentifier":"proj1","environment":{"id":"env-1","name":"Production"},"comment":"add beta users","approvalConfig":{"approvers":[{"id":"u2","name":"Bob"},{"id":"u3","email":"carol@example.com"}]},"createdAt":"2026-08-30T12:00:00Z","modifiedAt":"2026-08-31T09:30:00Z"}],"limit":100,"offset":0,"totalCount":1}`
+	srv, _, _ := fmeCaptureServerWithQuery(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Noun = "change_request"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "tsv"
+	ctx.FormatFlags.Columns = "id,resource_id,segment_type,comment,organization,project,approvers,modified"
+	ctx.FlagValues = map[string]any{}
+
+	if err := registry.RunListEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunListEndpoint: %v", err)
+	}
+	body := fmeReadOut(t, ctx)
+	for _, want := range []string{"cr-2", "seg-id", "LARGE", "add beta users", "org1", "proj1", "Bob, carol@example.com", "2026-08-31T09:30:00Z"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("output = %q, want it to contain %q", body, want)
+		}
+	}
+}
+
+// TestFMESpec_ListChangeRequests_DefaultColumns asserts the default table leads with the
+// resource name and keeps the documented column order.
+func TestFMESpec_ListChangeRequests_DefaultColumns(t *testing.T) {
+	reg := registry.New()
+	if _, err := LoadSpec(reg, "fme.spec.yaml", true); err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	cs := reg.GetSpec("list", "change_request")
+	if cs == nil || cs.Endpoint == nil {
+		t.Fatal("list change_request: command not found or missing endpoint spec")
+	}
+
+	fixture := `{"data":[{"id":"cr-3","status":"REQUESTED","resourceId":"seg-id","resourceName":"my-segment","resourceType":"SEGMENT","environment":{"id":"env-1","name":"Staging"},"createdBy":{"id":"u1","name":"Alice"},"createdAt":"2026-10-02T19:43:19.260Z"}],"limit":100,"offset":0,"totalCount":1}`
+	srv, _, _ := fmeCaptureServerWithQuery(t, fixture)
+
+	ctx := fmeTestCtx(t, srv.URL)
+	ctx.Noun = "change_request"
+	ctx.Resolver = reg
+	ctx.FormatFlags.Format = "tsv"
+	ctx.FlagValues = map[string]any{}
+
+	if err := registry.RunListEndpoint(ctx, cs.Endpoint); err != nil {
+		t.Fatalf("RunListEndpoint: %v", err)
+	}
+	want := "Id\tResource\tResource Type\tStatus\tEnvironment\tSubmitter\tCreated\ncr-3\tmy-segment\tSEGMENT\tREQUESTED\tStaging\tAlice\t2026-10-02T19:43:19.260Z\n"
+	if got := fmeReadOut(t, ctx); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}

@@ -269,6 +269,9 @@ nouns:
         expr: it.resourceType
       - id: resource
         expr: it.resourceName ?? it.resourceId
+      - id: resource_id
+        label: Resource ID
+        expr: it.resourceId ?? ""
       - id: segment_type
         label: Segment Type
         expr: it.segmentType ?? ""
@@ -280,7 +283,14 @@ nouns:
       - id: submitter
         expr: it.createdBy?.name ?? it.createdBy?.email ?? it.createdBy?.id ?? ""
       - id: approvers
-        expr: join(map(it.approvalConfig?.approvers ?? [], {#.name ?? #.email ?? #.id}), ", ")
+        expr: 'join(map(it.approvalConfig?.approvers ?? [], {#.name ?? #.email ?? #.id}), ", ")'
+      - id: comment
+        expr: it.comment ?? ""
+        width_max: 60
+      - id: organization
+        expr: it.organizationIdentifier ?? ""
+      - id: project
+        expr: it.projectIdentifier ?? ""
       - id: created
         expr: it.createdAt ?? ""
       - id: modified
@@ -1353,4 +1363,4 @@ commands:
         page_size_max: 100
         total_expr: it.totalCount
         countable: true
-      columns: [id, status, resource_type, resource, environment, submitter, created]
+      columns: [id, resource, resource_type, status, environment, submitter, created]
